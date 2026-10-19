@@ -164,7 +164,7 @@ set hass(hass) {
     this.description = this.config.description && hass.states[this.config.description] ? hass.states[this.config.description].state : this.weather.attributes.description;
   }
 
-  if (this.weather && !this.forecastSubscriber) {
+  if (this.weather && !this.forecastSubscriber && this.isConnected) {
     this.subscribeForecastEvents();
   }
 }
@@ -192,6 +192,16 @@ subscribeForecastEvents() {
   });
 }
 
+unsubscribeForecastEvents() {
+  if (!this.forecastSubscriber) {
+    return;
+  }
+  // subscribeMessage() resolves to the unsubscribe function.
+  const subscriber = this.forecastSubscriber;
+  this.forecastSubscriber = null;
+  subscriber.then((unsub) => unsub()).catch(() => {});
+}
+
   supportsFeature(feature) {
     return (this.weather.attributes.supported_features & feature) !== 0;
   }
@@ -207,10 +217,18 @@ subscribeForecastEvents() {
     if (!this.resizeInitialized) {
       this.delayedAttachResizeObserver();
     }
+    // HA detaches cards on view changes and when pop-ups close; resubscribe
+    // when the card comes back, otherwise the forecast stays frozen.
+    if (this._hass && this.weather && !this.forecastSubscriber) {
+      this.subscribeForecastEvents();
+    }
   }
 
   delayedAttachResizeObserver() {
     setTimeout(() => {
+      if (!this.isConnected) {
+        return;
+      }
       this.attachResizeObserver();
       this.resizeInitialized = true;
     }, 0);
@@ -219,12 +237,12 @@ subscribeForecastEvents() {
   disconnectedCallback() {
     super.disconnectedCallback();
     this.detachResizeObserver();
-    if (this.forecastSubscriber) {
-      this.forecastSubscriber.then((unsub) => unsub());
-    }
+    this.resizeInitialized = false;
+    this.unsubscribeForecastEvents();
   }
 
   attachResizeObserver() {
+    this.detachResizeObserver();
     this.resizeObserver = new ResizeObserver(() => {
       this.measureCard();
     });
