@@ -128,6 +128,7 @@ setConfig(config) {
     'https://cdn.jsdelivr.net/gh/mlamberts78/weather-chart-card/dist/icons/' ;
 
   this.config = cardConfig;
+  this.syncClock();
   if (!config.entity) {
     throw new Error('Please, define entity in the card config');
   }
@@ -229,6 +230,7 @@ unsubscribeForecastEvents() {
     if (this._hass && this.weather && !this.forecastSubscriber) {
       this.subscribeForecastEvents();
     }
+    this.syncClock();
     // firstUpdated() starts autoscroll on the first attach; this covers re-attach.
     if (this.hasUpdated && this.config && this.config.autoscroll) {
       this.autoscroll();
@@ -251,6 +253,7 @@ unsubscribeForecastEvents() {
     this.resizeInitialized = false;
     this.unsubscribeForecastEvents();
     this.cancelAutoscroll();
+    this.syncClock();
   }
 
   attachResizeObserver() {
@@ -418,6 +421,11 @@ async firstUpdated(changedProperties) {
 
 async updated(changedProperties) {
   await this.updateComplete;
+
+  // Paint the clock right away instead of waiting for the next tick.
+  if (this.config && this.config.show_time) {
+    this.updateClock();
+  }
 
   if (changedProperties.has('config')) {
     const oldConfig = changedProperties.get('config');
@@ -1017,7 +1025,6 @@ renderMain({ config, sun, weather, temperature, feels_like, description } = this
   if (config.show_main === false)
     return html``;
 
-  const use12HourFormat = config.use_12hour_format;
   const showTime = config.show_time;
   const showDay = config.show_day;
   const showDate = config.show_date;
@@ -1025,7 +1032,6 @@ renderMain({ config, sun, weather, temperature, feels_like, description } = this
   const showDescription = config.show_description;
   const showCurrentCondition = config.show_current_condition !== false;
   const showTemperature = config.show_temperature !== false;
-  const showSeconds = config.show_time_seconds === true;
 
   let roundedTemperature = parseFloat(temperature);
   if (!isNaN(roundedTemperature) && roundedTemperature % 1 !== 0) {
@@ -1040,45 +1046,6 @@ renderMain({ config, sun, weather, temperature, feels_like, description } = this
   const iconHtml = config.animated_icons || config.icons
     ? html`<img src="${this.getWeatherIcon(weather.state, sun.state)}" alt="">`
     : html`<ha-icon icon="${this.getWeatherIcon(weather.state, sun.state)}"></ha-icon>`;
-
-  const updateClock = () => {
-    const currentDate = new Date();
-    const timeOptions = {
-      hour12: use12HourFormat,
-      hour: 'numeric',
-      minute: 'numeric',
-      second: showSeconds ? 'numeric' : undefined
-    };
-    const currentTime = currentDate.toLocaleTimeString(this.language, timeOptions);
-    const currentDayOfWeek = currentDate.toLocaleString(this.language, { weekday: 'long' }).toUpperCase();
-    const currentDateFormatted = currentDate.toLocaleDateString(this.language, { month: 'long', day: 'numeric' });
-
-    const mainDiv = this.shadowRoot.querySelector('.main');
-    if (mainDiv) {
-      const clockElement = mainDiv.querySelector('#digital-clock');
-      if (clockElement) {
-        clockElement.textContent = currentTime;
-      }
-      if (showDay) {
-        const dayElement = mainDiv.querySelector('.date-text.day');
-        if (dayElement) {
-          dayElement.textContent = currentDayOfWeek;
-        }
-      }
-      if (showDate) {
-        const dateElement = mainDiv.querySelector('.date-text.date');
-        if (dateElement) {
-          dateElement.textContent = currentDateFormatted;
-        }
-      }
-    }
-  };
-
-  updateClock();
-
-  if (showTime) {
-    setInterval(updateClock, 1000);
-  }
 
   return html`
     <div class="main">
@@ -1114,6 +1081,45 @@ renderMain({ config, sun, weather, temperature, feels_like, description } = this
       </div>
     </div>
   `;
+}
+
+updateClock() {
+  const config = this.config;
+  const mainDiv = this.shadowRoot && this.shadowRoot.querySelector('.main');
+  if (!config || !mainDiv) {
+    return;
+  }
+
+  const currentDate = new Date();
+  const clockElement = mainDiv.querySelector('#digital-clock');
+  if (clockElement) {
+    clockElement.textContent = currentDate.toLocaleTimeString(this.language, {
+      hour12: config.use_12hour_format,
+      hour: 'numeric',
+      minute: 'numeric',
+      second: config.show_time_seconds === true ? 'numeric' : undefined
+    });
+  }
+  const dayElement = config.show_day && mainDiv.querySelector('.date-text.day');
+  if (dayElement) {
+    dayElement.textContent = currentDate.toLocaleString(this.language, { weekday: 'long' }).toUpperCase();
+  }
+  const dateElement = config.show_date && mainDiv.querySelector('.date-text.date');
+  if (dateElement) {
+    dateElement.textContent = currentDate.toLocaleDateString(this.language, { month: 'long', day: 'numeric' });
+  }
+}
+
+// One clock timer per connected card. It used to be created in renderMain()
+// on every render and never cleared, so thousands piled up within an hour.
+syncClock() {
+  const wanted = this.isConnected && this.config && this.config.show_time === true;
+  if (wanted && !this.clockInterval) {
+    this.clockInterval = setInterval(() => this.updateClock(), 1000);
+  } else if (!wanted && this.clockInterval) {
+    clearInterval(this.clockInterval);
+    this.clockInterval = null;
+  }
 }
 
 renderAttributes({ config, humidity, pressure, windSpeed, windDirection, sun, language, uv_index, dew_point, wind_gust_speed, visibility } = this) {
