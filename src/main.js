@@ -499,6 +499,8 @@ autoscroll() {
     this.autoscrollTimeout = setTimeout(() => {
       this.autoscrollTimeout = null;
       this.updateChart();
+      // Icons and the wind row follow the same visible window as the chart.
+      this.requestUpdate();
       updateChartOncePerHour();
     }, nextHour - now);
   };
@@ -536,6 +538,8 @@ drawChart({ config, language } = this) {
     precipUnit = lengthUnit === 'km' ? this.ll('units')['mm'] : this.ll('units')['in'];
   }
   const data = this.computeForecastData();
+  // Math.min/max would treat null gaps as 0.
+  const temps = [...data.tempHigh, ...data.tempLow].filter((t) => t !== null);
 
   var style = getComputedStyle(document.body);
   var backgroundColor = style.getPropertyValue('--card-background-color');
@@ -733,8 +737,8 @@ drawChart({ config, language } = this) {
         TempAxis: {
           position: 'left',
           beginAtZero: false,
-          suggestedMin: Math.min(...data.tempHigh, ...data.tempLow) - 5,
-          suggestedMax: Math.max(...data.tempHigh, ...data.tempLow) + 3,
+          suggestedMin: temps.length ? Math.min(...temps) - 5 : undefined,
+          suggestedMax: temps.length ? Math.max(...temps) + 3 : undefined,
           grid: {
             display: false,
             drawTicks: false,
@@ -808,48 +812,44 @@ drawChart({ config, language } = this) {
   });
 }
 
-computeForecastData({ config, forecastItems } = this) {
-  var forecast = this.forecasts ? this.forecasts.slice(0, forecastItems) : [];
-  var roundTemp = config.forecast.round_temp == true;
-  var dateTime = [];
-  var tempHigh = [];
-  var tempLow = [];
-  var precip = [];
-
-  for (var i = 0; i < forecast.length; i++) {
-    var d = forecast[i];
-    if (config.autoscroll) {
-      const cutoff = (config.forecast.type === 'hourly' ? 1 : 24) * 60 * 60 * 1000;
-      if (new Date() - new Date(d.datetime) > cutoff) {
-        continue;
-      }
-    }
-    dateTime.push(d.datetime);
-    tempHigh.push(d.temperature);
-    if (typeof d.templow !== 'undefined') {
-      tempLow.push(d.templow);
-    }
-
-    if (roundTemp) {
-      tempHigh[i] = Math.round(tempHigh[i]);
-      if (typeof d.templow !== 'undefined') {
-        tempLow[i] = Math.round(tempLow[i]);
-      }
-    }
-    if (config.forecast.precipitation_type === 'probability') {
-      precip.push(d.precipitation_probability);
-    } else {
-      precip.push(d.precipitation);
-    }
+// The forecast entries shown in the card. Chart, condition icons and the
+// wind row all use this list, so their columns always line up. With
+// autoscroll, entries that are already in the past are dropped first and
+// the remaining ones fill the available width.
+_visibleForecast({ config, forecastItems } = this) {
+  if (!this.forecasts) {
+    return [];
   }
+  let forecast = this.forecasts;
+  if (config.autoscroll) {
+    const cutoff = (config.forecast.type === 'hourly' ? 1 : 24) * 60 * 60 * 1000;
+    const now = new Date();
+    forecast = forecast.filter((d) => now - new Date(d.datetime) <= cutoff);
+  }
+  return forecast.slice(0, forecastItems);
+}
+
+computeForecastData({ config } = this) {
+  const forecast = this._visibleForecast();
+  const roundTemp = config.forecast.round_temp == true;
+  // Missing values become null so Chart.js leaves a gap at that position
+  // instead of shifting the rest of the series one column to the left.
+  const value = (v) => (v === undefined || v === null ? null : v);
+  const temp = (v) => {
+    const t = value(v);
+    return t !== null && roundTemp ? Math.round(t) : t;
+  };
+  const precipKey = config.forecast.precipitation_type === 'probability'
+    ? 'precipitation_probability'
+    : 'precipitation';
 
   return {
     forecast,
-    dateTime,
-    tempHigh,
-    tempLow,
-    precip,
-  }
+    dateTime: forecast.map((d) => d.datetime),
+    tempHigh: forecast.map((d) => temp(d.temperature)),
+    tempLow: forecast.map((d) => temp(d.templow)),
+    precip: forecast.map((d) => value(d[precipKey])),
+  };
 }
 
 updateChart({ forecasts, forecastChart } = this) {
@@ -1281,8 +1281,8 @@ const timeOptions = {
   `;
 }
 
-renderForecastConditionIcons({ config, forecastItems, sun } = this) {
-  const forecast = this.forecasts ? this.forecasts.slice(0, forecastItems) : [];
+renderForecastConditionIcons({ config, sun } = this) {
+  const forecast = this._visibleForecast();
 
   if (config.forecast.condition_icons === false) {
     return html``;
@@ -1338,14 +1338,14 @@ renderForecastConditionIcons({ config, forecastItems, sun } = this) {
   `;
 }
 
-renderWind({ config, forecastItems } = this) {
+renderWind({ config } = this) {
   const showWindForecast = config.forecast.show_wind_forecast !== false;
 
   if (!showWindForecast) {
     return html``;
   }
 
-  const forecast = this.forecasts ? this.forecasts.slice(0, forecastItems) : [];
+  const forecast = this._visibleForecast();
 
   return html`
     <div class="wind-details">
