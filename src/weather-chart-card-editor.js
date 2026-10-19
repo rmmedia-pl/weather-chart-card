@@ -93,7 +93,7 @@ class WeatherChartCardEditor extends LitElement {
     }
   }
 
-  _EntityChanged(event, key) {
+  _EntityChanged(event) {
     if (!this._config) {
       return;
     }
@@ -203,7 +203,6 @@ class WeatherChartCardEditor extends LitElement {
     }
     const forecastConfig = this._config.forecast || {};
     const unitsConfig = this._config.units || {};
-    const isShowTimeOn = this._config.show_time !== false;
 
 
     return html`

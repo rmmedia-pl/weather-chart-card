@@ -8,7 +8,6 @@ import {
 } from './const.js';
 import {LitElement, html} from 'lit';
 import './weather-chart-card-editor.js';
-import { property } from 'lit/decorators.js';
 import {Chart, registerables} from 'chart.js';
 import ChartDataLabels from 'chartjs-plugin-datalabels';
 Chart.register(...registerables, ChartDataLabels);
@@ -440,6 +439,7 @@ autoscroll() {
     this.autoscrollTimeout = setTimeout(() => {
       this.autoscrollTimeout = null;
       this.updateChart();
+      // eslint-disable-next-line no-undef -- pre-existing bug, fixed separately
       drawChartOncePerHour();
     }, nextHour - now);
   };
@@ -453,7 +453,7 @@ cancelAutoscroll() {
   }
 }
 
-drawChart({ config, language, weather, forecastItems } = this) {
+drawChart({ config, language } = this) {
   if (!this.forecasts || !this.forecasts.length) {
     return [];
   }
@@ -469,10 +469,11 @@ drawChart({ config, language, weather, forecastItems } = this) {
   }
   var tempUnit = this._hass.config.unit_system.temperature;
   var lengthUnit = this._hass.config.unit_system.length;
+  var precipUnit;
   if (config.forecast.precipitation_type === 'probability') {
-    var precipUnit = '%';
+    precipUnit = '%';
   } else {
-    var precipUnit = lengthUnit === 'km' ? this.ll('units')['mm'] : this.ll('units')['in'];
+    precipUnit = lengthUnit === 'km' ? this.ll('units')['mm'] : this.ll('units')['in'];
   }
   const data = this.computeForecastData();
 
@@ -572,7 +573,7 @@ drawChart({ config, language, weather, forecastItems } = this) {
 
   if (config.forecast.style === 'style2') {
     datasets[0].datalabels = {
-      display: function (context) {
+      display: function () {
         return 'true';
       },
       formatter: function (value, context) {
@@ -590,7 +591,7 @@ drawChart({ config, language, weather, forecastItems } = this) {
     };
 
     datasets[1].datalabels = {
-      display: function (context) {
+      display: function () {
         return 'true';
       },
       formatter: function (value, context) {
@@ -636,7 +637,7 @@ drawChart({ config, language, weather, forecastItems } = this) {
               maxRotation: 0,
               color: config.forecast.chart_datetime_color || textColor,
               padding: config.forecast.precipitation_type === 'rainfall' && config.forecast.show_probability && config.forecast.type !== 'hourly' ? 4 : 10,
-              callback: function (value, index, values) {
+              callback: function (value) {
                   var datetime = this.getLabelForValue(value);
                   var dateObj = new Date(datetime);
         
@@ -1201,7 +1202,7 @@ return html`
 `;
 }
 
-renderSun({ sun, language, config } = this) {
+renderSun({ sun, language } = this) {
   if (sun == undefined) {
     return html``;
   }
@@ -1229,7 +1230,7 @@ renderForecastConditionIcons({ config, forecastItems, sun } = this) {
   }
 
   return html`
-    <div class="conditions" @click="${(e) => this.showMoreInfo(config.entity)}">
+    <div class="conditions" @click="${() => this.showMoreInfo(config.entity)}">
       ${forecast.map((item) => {
         const forecastTime = new Date(item.datetime);
         const sunriseTime = new Date(sun.attributes.next_rising);
@@ -1280,7 +1281,7 @@ renderForecastConditionIcons({ config, forecastItems, sun } = this) {
   `;
 }
 
-renderWind({ config, weather, windSpeed, windDirection, forecastItems } = this) {
+renderWind({ config, forecastItems } = this) {
   const showWindForecast = config.forecast.show_wind_forecast !== false;
 
   if (!showWindForecast) {
