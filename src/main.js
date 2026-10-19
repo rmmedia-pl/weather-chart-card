@@ -179,17 +179,24 @@ subscribeForecastEvents() {
     return;
   }
 
+  let subscriber;
   const callback = (event) => {
+    // Ignore events that a replaced subscription delivers before its
+    // asynchronous unsubscribe has gone through.
+    if (this.forecastSubscriber !== subscriber) {
+      return;
+    }
     this.forecasts = event.forecast;
     this.requestUpdate();
     this.drawChart();
   };
 
-  this.forecastSubscriber = this._hass.connection.subscribeMessage(callback, {
+  subscriber = this._hass.connection.subscribeMessage(callback, {
     type: "weather/subscribe_forecast",
     forecast_type: isHourly ? 'hourly' : 'daily',
     entity_id: this.config.entity,
   });
+  this.forecastSubscriber = subscriber;
 }
 
 unsubscribeForecastEvents() {
@@ -415,11 +422,15 @@ async updated(changedProperties) {
     const autoscrollChanged = oldConfig && this.config.autoscroll !== oldConfig.autoscroll;
 
     if (entityChanged || forecastTypeChanged) {
-      if (this.forecastSubscriber && typeof this.forecastSubscriber === 'function') {
-        this.forecastSubscriber();
+      // subscribeMessage() returns a Promise, not the unsubscribe function,
+      // so the old subscription used to stay alive and race the new one.
+      this.unsubscribeForecastEvents();
+      if (this._hass && this.isConnected) {
+        this.weather = this._hass.states[this.config.entity] || null;
+        if (this.weather) {
+          this.subscribeForecastEvents();
+        }
       }
-
-      this.subscribeForecastEvents();
     }
 
     if (this.forecasts && this.forecasts.length) {
