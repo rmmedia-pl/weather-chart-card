@@ -18087,28 +18087,46 @@ set hass(hass) {
     : null;
 
   if (this.weather) {
-    this.temperature = this.config.temp ? hass.states[this.config.temp].state : this.weather.attributes.temperature;
-    this.humidity = this.config.humid ? hass.states[this.config.humid].state : this.weather.attributes.humidity;
-    this.pressure = this.config.press ? hass.states[this.config.press].state : this.weather.attributes.pressure;
-    this.uv_index = this.config.uv ? hass.states[this.config.uv].state : this.weather.attributes.uv_index;
-    this.windSpeed = this.config.windspeed ? hass.states[this.config.windspeed].state : this.weather.attributes.wind_speed;
-    this.dew_point = this.config.dew_point ? hass.states[this.config.dew_point].state : this.weather.attributes.dew_point;
-    this.wind_gust_speed = this.config.wind_gust_speed ? hass.states[this.config.wind_gust_speed].state : this.weather.attributes.wind_gust_speed;
-    this.visibility = this.config.visibility ? hass.states[this.config.visibility].state : this.weather.attributes.visibility;
+    const attrs = this.weather.attributes;
+    this.temperature = this.sensorState(this.config.temp, attrs.temperature);
+    this.humidity = this.sensorState(this.config.humid, attrs.humidity);
+    this.pressure = this.sensorState(this.config.press, attrs.pressure);
+    this.uv_index = this.sensorState(this.config.uv, attrs.uv_index);
+    this.windSpeed = this.sensorState(this.config.windspeed, attrs.wind_speed);
+    this.dew_point = this.sensorState(this.config.dew_point, attrs.dew_point);
+    this.wind_gust_speed = this.sensorState(this.config.wind_gust_speed, attrs.wind_gust_speed);
+    this.visibility = this.sensorState(this.config.visibility, attrs.visibility);
 
-    if (this.config.winddir && hass.states[this.config.winddir] && hass.states[this.config.winddir].state !== undefined) {
-      this.windDirection = parseFloat(hass.states[this.config.winddir].state);
+    const windDir = this.sensorState(this.config.winddir, undefined);
+    if (windDir !== undefined) {
+      // Numeric bearing in degrees, or a cardinal direction such as "NW".
+      const bearing = parseFloat(windDir);
+      this.windDirection = isNaN(bearing) ? windDir : bearing;
     } else {
-      this.windDirection = this.weather.attributes.wind_bearing;
+      this.windDirection = attrs.wind_bearing;
     }
 
-    this.feels_like = this.config.feels_like && hass.states[this.config.feels_like] ? hass.states[this.config.feels_like].state : this.weather.attributes.apparent_temperature;
-    this.description = this.config.description && hass.states[this.config.description] ? hass.states[this.config.description].state : this.weather.attributes.description;
+    this.feels_like = this.sensorState(this.config.feels_like, attrs.apparent_temperature);
+    this.description = this.sensorState(this.config.description, attrs.description);
   }
 
   if (this.weather && !this.forecastSubscriber && this.isConnected) {
     this.subscribeForecastEvents();
   }
+}
+
+// State of an optional override sensor, or the fallback (usually the
+// weather entity's attribute) when the sensor is not configured, does not
+// exist or has no usable state.
+sensorState(entityId, fallback) {
+  if (!entityId) {
+    return fallback;
+  }
+  const stateObj = this._hass.states[entityId];
+  if (!stateObj || ['unavailable', 'unknown', ''].includes(stateObj.state)) {
+    return fallback;
+  }
+  return stateObj.state;
 }
 
 subscribeForecastEvents() {
