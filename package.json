@@ -11,8 +11,11 @@
     "custom-cards"
   ],
   "module": "src/main.js",
-  "repository": "git@github.com:mlamberts78/weather-chart-card.git",
-  "author": "Marc Lamberts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rmmedia-pl/weather-chart-card.git"
+  },
+  "author": "Marc Lamberts (original), rmmedia-pl (fork maintainer)",
   "license": "MIT",
   "dependencies": {
     "chart.js": "^4.4.1",
@@ -33,5 +36,9 @@
     "build": "npm run lint && npm run rollup",
     "lint": "eslint src *.mjs",
     "rollup": "rollup -c"
-  }
+  },
+  "bugs": {
+    "url": "https://github.com/rmmedia-pl/weather-chart-card/issues"
+  },
+  "homepage": "https://github.com/rmmedia-pl/weather-chart-card#readme"
 }
