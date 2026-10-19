@@ -18170,6 +18170,10 @@ unsubscribeForecastEvents() {
     if (this._hass && this.weather && !this.forecastSubscriber) {
       this.subscribeForecastEvents();
     }
+    // firstUpdated() starts autoscroll on the first attach; this covers re-attach.
+    if (this.hasUpdated && this.config && this.config.autoscroll) {
+      this.autoscroll();
+    }
   }
 
   delayedAttachResizeObserver() {
@@ -18187,6 +18191,7 @@ unsubscribeForecastEvents() {
     this.detachResizeObserver();
     this.resizeInitialized = false;
     this.unsubscribeForecastEvents();
+    this.cancelAutoscroll();
   }
 
   attachResizeObserver() {
@@ -18379,7 +18384,7 @@ async updated(changedProperties) {
     }
 
     if (autoscrollChanged) {
-      if (!this.config.autoscroll) {
+      if (this.config.autoscroll) {
         this.autoscroll();
       } else {
         this.cancelAutoscroll();
@@ -18409,8 +18414,7 @@ autoscroll() {
     this.autoscrollTimeout = setTimeout(() => {
       this.autoscrollTimeout = null;
       this.updateChart();
-      // eslint-disable-next-line no-undef -- pre-existing bug, fixed separately
-      drawChartOncePerHour();
+      updateChartOncePerHour();
     }, nextHour - now);
   };
 
@@ -18420,6 +18424,7 @@ autoscroll() {
 cancelAutoscroll() {
   if (this.autoscrollTimeout) {
     clearTimeout(this.autoscrollTimeout);
+    this.autoscrollTimeout = null;
   }
 }
 
