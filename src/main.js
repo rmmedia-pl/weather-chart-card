@@ -8,7 +8,6 @@ import {
 } from './const.js';
 import {LitElement, html} from 'lit';
 import './weather-chart-card-editor.js';
-import { property } from 'lit/decorators.js';
 import {Chart, registerables} from 'chart.js';
 import ChartDataLabels from 'chartjs-plugin-datalabels';
 Chart.register(...registerables, ChartDataLabels);
@@ -129,6 +128,7 @@ setConfig(config) {
     'https://cdn.jsdelivr.net/gh/mlamberts78/weather-chart-card/dist/icons/' ;
 
   this.config = cardConfig;
+  this.syncClock();
   if (!config.entity) {
     throw new Error('Please, define entity in the card config');
   }
@@ -146,28 +146,46 @@ set hass(hass) {
     : null;
 
   if (this.weather) {
-    this.temperature = this.config.temp ? hass.states[this.config.temp].state : this.weather.attributes.temperature;
-    this.humidity = this.config.humid ? hass.states[this.config.humid].state : this.weather.attributes.humidity;
-    this.pressure = this.config.press ? hass.states[this.config.press].state : this.weather.attributes.pressure;
-    this.uv_index = this.config.uv ? hass.states[this.config.uv].state : this.weather.attributes.uv_index;
-    this.windSpeed = this.config.windspeed ? hass.states[this.config.windspeed].state : this.weather.attributes.wind_speed;
-    this.dew_point = this.config.dew_point ? hass.states[this.config.dew_point].state : this.weather.attributes.dew_point;
-    this.wind_gust_speed = this.config.wind_gust_speed ? hass.states[this.config.wind_gust_speed].state : this.weather.attributes.wind_gust_speed;
-    this.visibility = this.config.visibility ? hass.states[this.config.visibility].state : this.weather.attributes.visibility;
+    const attrs = this.weather.attributes;
+    this.temperature = this.sensorState(this.config.temp, attrs.temperature);
+    this.humidity = this.sensorState(this.config.humid, attrs.humidity);
+    this.pressure = this.sensorState(this.config.press, attrs.pressure);
+    this.uv_index = this.sensorState(this.config.uv, attrs.uv_index);
+    this.windSpeed = this.sensorState(this.config.windspeed, attrs.wind_speed);
+    this.dew_point = this.sensorState(this.config.dew_point, attrs.dew_point);
+    this.wind_gust_speed = this.sensorState(this.config.wind_gust_speed, attrs.wind_gust_speed);
+    this.visibility = this.sensorState(this.config.visibility, attrs.visibility);
 
-    if (this.config.winddir && hass.states[this.config.winddir] && hass.states[this.config.winddir].state !== undefined) {
-      this.windDirection = parseFloat(hass.states[this.config.winddir].state);
+    const windDir = this.sensorState(this.config.winddir, undefined);
+    if (windDir !== undefined) {
+      // Numeric bearing in degrees, or a cardinal direction such as "NW".
+      const bearing = parseFloat(windDir);
+      this.windDirection = isNaN(bearing) ? windDir : bearing;
     } else {
-      this.windDirection = this.weather.attributes.wind_bearing;
+      this.windDirection = attrs.wind_bearing;
     }
 
-    this.feels_like = this.config.feels_like && hass.states[this.config.feels_like] ? hass.states[this.config.feels_like].state : this.weather.attributes.apparent_temperature;
-    this.description = this.config.description && hass.states[this.config.description] ? hass.states[this.config.description].state : this.weather.attributes.description;
+    this.feels_like = this.sensorState(this.config.feels_like, attrs.apparent_temperature);
+    this.description = this.sensorState(this.config.description, attrs.description);
   }
 
-  if (this.weather && !this.forecastSubscriber) {
+  if (this.weather && !this.forecastSubscriber && this.isConnected) {
     this.subscribeForecastEvents();
   }
+}
+
+// State of an optional override sensor, or the fallback (usually the
+// weather entity's attribute) when the sensor is not configured, does not
+// exist or has no usable state.
+sensorState(entityId, fallback) {
+  if (!entityId) {
+    return fallback;
+  }
+  const stateObj = this._hass.states[entityId];
+  if (!stateObj || ['unavailable', 'unknown', ''].includes(stateObj.state)) {
+    return fallback;
+  }
+  return stateObj.state;
 }
 
 subscribeForecastEvents() {
@@ -180,17 +198,34 @@ subscribeForecastEvents() {
     return;
   }
 
+  let subscriber;
   const callback = (event) => {
+    // Ignore events that a replaced subscription delivers before its
+    // asynchronous unsubscribe has gone through.
+    if (this.forecastSubscriber !== subscriber) {
+      return;
+    }
     this.forecasts = event.forecast;
     this.requestUpdate();
     this.drawChart();
   };
 
-  this.forecastSubscriber = this._hass.connection.subscribeMessage(callback, {
+  subscriber = this._hass.connection.subscribeMessage(callback, {
     type: "weather/subscribe_forecast",
     forecast_type: isHourly ? 'hourly' : 'daily',
     entity_id: this.config.entity,
   });
+  this.forecastSubscriber = subscriber;
+}
+
+unsubscribeForecastEvents() {
+  if (!this.forecastSubscriber) {
+    return;
+  }
+  // subscribeMessage() resolves to the unsubscribe function.
+  const subscriber = this.forecastSubscriber;
+  this.forecastSubscriber = null;
+  subscriber.then((unsub) => unsub()).catch(() => {});
 }
 
   supportsFeature(feature) {
@@ -208,10 +243,23 @@ subscribeForecastEvents() {
     if (!this.resizeInitialized) {
       this.delayedAttachResizeObserver();
     }
+    // HA detaches cards on view changes and when pop-ups close; resubscribe
+    // when the card comes back, otherwise the forecast stays frozen.
+    if (this._hass && this.weather && !this.forecastSubscriber) {
+      this.subscribeForecastEvents();
+    }
+    this.syncClock();
+    // firstUpdated() starts autoscroll on the first attach; this covers re-attach.
+    if (this.hasUpdated && this.config && this.config.autoscroll) {
+      this.autoscroll();
+    }
   }
 
   delayedAttachResizeObserver() {
     setTimeout(() => {
+      if (!this.isConnected) {
+        return;
+      }
       this.attachResizeObserver();
       this.resizeInitialized = true;
     }, 0);
@@ -220,12 +268,14 @@ subscribeForecastEvents() {
   disconnectedCallback() {
     super.disconnectedCallback();
     this.detachResizeObserver();
-    if (this.forecastSubscriber) {
-      this.forecastSubscriber.then((unsub) => unsub());
-    }
+    this.resizeInitialized = false;
+    this.unsubscribeForecastEvents();
+    this.cancelAutoscroll();
+    this.syncClock();
   }
 
   attachResizeObserver() {
+    this.detachResizeObserver();
     this.resizeObserver = new ResizeObserver(() => {
       this.measureCard();
     });
@@ -390,6 +440,11 @@ async firstUpdated(changedProperties) {
 async updated(changedProperties) {
   await this.updateComplete;
 
+  // Paint the clock right away instead of waiting for the next tick.
+  if (this.config && this.config.show_time) {
+    this.updateClock();
+  }
+
   if (changedProperties.has('config')) {
     const oldConfig = changedProperties.get('config');
 
@@ -398,11 +453,15 @@ async updated(changedProperties) {
     const autoscrollChanged = oldConfig && this.config.autoscroll !== oldConfig.autoscroll;
 
     if (entityChanged || forecastTypeChanged) {
-      if (this.forecastSubscriber && typeof this.forecastSubscriber === 'function') {
-        this.forecastSubscriber();
+      // subscribeMessage() returns a Promise, not the unsubscribe function,
+      // so the old subscription used to stay alive and race the new one.
+      this.unsubscribeForecastEvents();
+      if (this._hass && this.isConnected) {
+        this.weather = this._hass.states[this.config.entity] || null;
+        if (this.weather) {
+          this.subscribeForecastEvents();
+        }
       }
-
-      this.subscribeForecastEvents();
     }
 
     if (this.forecasts && this.forecasts.length) {
@@ -410,7 +469,7 @@ async updated(changedProperties) {
     }
 
     if (autoscrollChanged) {
-      if (!this.config.autoscroll) {
+      if (this.config.autoscroll) {
         this.autoscroll();
       } else {
         this.cancelAutoscroll();
@@ -440,7 +499,9 @@ autoscroll() {
     this.autoscrollTimeout = setTimeout(() => {
       this.autoscrollTimeout = null;
       this.updateChart();
-      drawChartOncePerHour();
+      // Icons and the wind row follow the same visible window as the chart.
+      this.requestUpdate();
+      updateChartOncePerHour();
     }, nextHour - now);
   };
 
@@ -450,10 +511,11 @@ autoscroll() {
 cancelAutoscroll() {
   if (this.autoscrollTimeout) {
     clearTimeout(this.autoscrollTimeout);
+    this.autoscrollTimeout = null;
   }
 }
 
-drawChart({ config, language, weather, forecastItems } = this) {
+drawChart({ config, language } = this) {
   if (!this.forecasts || !this.forecasts.length) {
     return [];
   }
@@ -469,12 +531,15 @@ drawChart({ config, language, weather, forecastItems } = this) {
   }
   var tempUnit = this._hass.config.unit_system.temperature;
   var lengthUnit = this._hass.config.unit_system.length;
+  var precipUnit;
   if (config.forecast.precipitation_type === 'probability') {
-    var precipUnit = '%';
+    precipUnit = '%';
   } else {
-    var precipUnit = lengthUnit === 'km' ? this.ll('units')['mm'] : this.ll('units')['in'];
+    precipUnit = lengthUnit === 'km' ? this.ll('units')['mm'] : this.ll('units')['in'];
   }
   const data = this.computeForecastData();
+  // Math.min/max would treat null gaps as 0.
+  const temps = [...data.tempHigh, ...data.tempLow].filter((t) => t !== null);
 
   var style = getComputedStyle(document.body);
   var backgroundColor = style.getPropertyValue('--card-background-color');
@@ -572,7 +637,7 @@ drawChart({ config, language, weather, forecastItems } = this) {
 
   if (config.forecast.style === 'style2') {
     datasets[0].datalabels = {
-      display: function (context) {
+      display: function () {
         return 'true';
       },
       formatter: function (value, context) {
@@ -590,7 +655,7 @@ drawChart({ config, language, weather, forecastItems } = this) {
     };
 
     datasets[1].datalabels = {
-      display: function (context) {
+      display: function () {
         return 'true';
       },
       formatter: function (value, context) {
@@ -636,7 +701,7 @@ drawChart({ config, language, weather, forecastItems } = this) {
               maxRotation: 0,
               color: config.forecast.chart_datetime_color || textColor,
               padding: config.forecast.precipitation_type === 'rainfall' && config.forecast.show_probability && config.forecast.type !== 'hourly' ? 4 : 10,
-              callback: function (value, index, values) {
+              callback: function (value) {
                   var datetime = this.getLabelForValue(value);
                   var dateObj = new Date(datetime);
         
@@ -672,8 +737,8 @@ drawChart({ config, language, weather, forecastItems } = this) {
         TempAxis: {
           position: 'left',
           beginAtZero: false,
-          suggestedMin: Math.min(...data.tempHigh, ...data.tempLow) - 5,
-          suggestedMax: Math.max(...data.tempHigh, ...data.tempLow) + 3,
+          suggestedMin: temps.length ? Math.min(...temps) - 5 : undefined,
+          suggestedMax: temps.length ? Math.max(...temps) + 3 : undefined,
           grid: {
             display: false,
             drawTicks: false,
@@ -747,48 +812,44 @@ drawChart({ config, language, weather, forecastItems } = this) {
   });
 }
 
-computeForecastData({ config, forecastItems } = this) {
-  var forecast = this.forecasts ? this.forecasts.slice(0, forecastItems) : [];
-  var roundTemp = config.forecast.round_temp == true;
-  var dateTime = [];
-  var tempHigh = [];
-  var tempLow = [];
-  var precip = [];
-
-  for (var i = 0; i < forecast.length; i++) {
-    var d = forecast[i];
-    if (config.autoscroll) {
-      const cutoff = (config.forecast.type === 'hourly' ? 1 : 24) * 60 * 60 * 1000;
-      if (new Date() - new Date(d.datetime) > cutoff) {
-        continue;
-      }
-    }
-    dateTime.push(d.datetime);
-    tempHigh.push(d.temperature);
-    if (typeof d.templow !== 'undefined') {
-      tempLow.push(d.templow);
-    }
-
-    if (roundTemp) {
-      tempHigh[i] = Math.round(tempHigh[i]);
-      if (typeof d.templow !== 'undefined') {
-        tempLow[i] = Math.round(tempLow[i]);
-      }
-    }
-    if (config.forecast.precipitation_type === 'probability') {
-      precip.push(d.precipitation_probability);
-    } else {
-      precip.push(d.precipitation);
-    }
+// The forecast entries shown in the card. Chart, condition icons and the
+// wind row all use this list, so their columns always line up. With
+// autoscroll, entries that are already in the past are dropped first and
+// the remaining ones fill the available width.
+_visibleForecast({ config, forecastItems } = this) {
+  if (!this.forecasts) {
+    return [];
   }
+  let forecast = this.forecasts;
+  if (config.autoscroll) {
+    const cutoff = (config.forecast.type === 'hourly' ? 1 : 24) * 60 * 60 * 1000;
+    const now = new Date();
+    forecast = forecast.filter((d) => now - new Date(d.datetime) <= cutoff);
+  }
+  return forecast.slice(0, forecastItems);
+}
+
+computeForecastData({ config } = this) {
+  const forecast = this._visibleForecast();
+  const roundTemp = config.forecast.round_temp == true;
+  // Missing values become null so Chart.js leaves a gap at that position
+  // instead of shifting the rest of the series one column to the left.
+  const value = (v) => (v === undefined || v === null ? null : v);
+  const temp = (v) => {
+    const t = value(v);
+    return t !== null && roundTemp ? Math.round(t) : t;
+  };
+  const precipKey = config.forecast.precipitation_type === 'probability'
+    ? 'precipitation_probability'
+    : 'precipitation';
 
   return {
     forecast,
-    dateTime,
-    tempHigh,
-    tempLow,
-    precip,
-  }
+    dateTime: forecast.map((d) => d.datetime),
+    tempHigh: forecast.map((d) => temp(d.temperature)),
+    tempLow: forecast.map((d) => temp(d.templow)),
+    precip: forecast.map((d) => value(d[precipKey])),
+  };
 }
 
 updateChart({ forecasts, forecastChart } = this) {
@@ -982,7 +1043,6 @@ renderMain({ config, sun, weather, temperature, feels_like, description } = this
   if (config.show_main === false)
     return html``;
 
-  const use12HourFormat = config.use_12hour_format;
   const showTime = config.show_time;
   const showDay = config.show_day;
   const showDate = config.show_date;
@@ -990,7 +1050,6 @@ renderMain({ config, sun, weather, temperature, feels_like, description } = this
   const showDescription = config.show_description;
   const showCurrentCondition = config.show_current_condition !== false;
   const showTemperature = config.show_temperature !== false;
-  const showSeconds = config.show_time_seconds === true;
 
   let roundedTemperature = parseFloat(temperature);
   if (!isNaN(roundedTemperature) && roundedTemperature % 1 !== 0) {
@@ -1002,48 +1061,10 @@ renderMain({ config, sun, weather, temperature, feels_like, description } = this
     roundedFeelsLike = Math.round(roundedFeelsLike * 10) / 10;
   }
 
+  const sunState = sun ? sun.state : undefined;
   const iconHtml = config.animated_icons || config.icons
-    ? html`<img src="${this.getWeatherIcon(weather.state, sun.state)}" alt="">`
-    : html`<ha-icon icon="${this.getWeatherIcon(weather.state, sun.state)}"></ha-icon>`;
-
-  const updateClock = () => {
-    const currentDate = new Date();
-    const timeOptions = {
-      hour12: use12HourFormat,
-      hour: 'numeric',
-      minute: 'numeric',
-      second: showSeconds ? 'numeric' : undefined
-    };
-    const currentTime = currentDate.toLocaleTimeString(this.language, timeOptions);
-    const currentDayOfWeek = currentDate.toLocaleString(this.language, { weekday: 'long' }).toUpperCase();
-    const currentDateFormatted = currentDate.toLocaleDateString(this.language, { month: 'long', day: 'numeric' });
-
-    const mainDiv = this.shadowRoot.querySelector('.main');
-    if (mainDiv) {
-      const clockElement = mainDiv.querySelector('#digital-clock');
-      if (clockElement) {
-        clockElement.textContent = currentTime;
-      }
-      if (showDay) {
-        const dayElement = mainDiv.querySelector('.date-text.day');
-        if (dayElement) {
-          dayElement.textContent = currentDayOfWeek;
-        }
-      }
-      if (showDate) {
-        const dateElement = mainDiv.querySelector('.date-text.date');
-        if (dateElement) {
-          dateElement.textContent = currentDateFormatted;
-        }
-      }
-    }
-  };
-
-  updateClock();
-
-  if (showTime) {
-    setInterval(updateClock, 1000);
-  }
+    ? html`<img src="${this.getWeatherIcon(weather.state, sunState)}" alt="">`
+    : html`<ha-icon icon="${this.getWeatherIcon(weather.state, sunState)}"></ha-icon>`;
 
   return html`
     <div class="main">
@@ -1079,6 +1100,45 @@ renderMain({ config, sun, weather, temperature, feels_like, description } = this
       </div>
     </div>
   `;
+}
+
+updateClock() {
+  const config = this.config;
+  const mainDiv = this.shadowRoot && this.shadowRoot.querySelector('.main');
+  if (!config || !mainDiv) {
+    return;
+  }
+
+  const currentDate = new Date();
+  const clockElement = mainDiv.querySelector('#digital-clock');
+  if (clockElement) {
+    clockElement.textContent = currentDate.toLocaleTimeString(this.language, {
+      hour12: config.use_12hour_format,
+      hour: 'numeric',
+      minute: 'numeric',
+      second: config.show_time_seconds === true ? 'numeric' : undefined
+    });
+  }
+  const dayElement = config.show_day && mainDiv.querySelector('.date-text.day');
+  if (dayElement) {
+    dayElement.textContent = currentDate.toLocaleString(this.language, { weekday: 'long' }).toUpperCase();
+  }
+  const dateElement = config.show_date && mainDiv.querySelector('.date-text.date');
+  if (dateElement) {
+    dateElement.textContent = currentDate.toLocaleDateString(this.language, { month: 'long', day: 'numeric' });
+  }
+}
+
+// One clock timer per connected card. It used to be created in renderMain()
+// on every render and never cleared, so thousands piled up within an hour.
+syncClock() {
+  const wanted = this.isConnected && this.config && this.config.show_time === true;
+  if (wanted && !this.clockInterval) {
+    this.clockInterval = setInterval(() => this.updateClock(), 1000);
+  } else if (!wanted && this.clockInterval) {
+    clearInterval(this.clockInterval);
+    this.clockInterval = null;
+  }
 }
 
 renderAttributes({ config, humidity, pressure, windSpeed, windDirection, sun, language, uv_index, dew_point, wind_gust_speed, visibility } = this) {
@@ -1168,14 +1228,14 @@ return html`
           ` : ''}
         </div>
       ` : ''}
-      ${((showSun && sun !== undefined) || (typeof uv_index !== 'undefined' && uv_index !== undefined)) ? html`
+      ${((showSun && sun) || (typeof uv_index !== 'undefined' && uv_index !== undefined)) ? html`
         <div>
           ${typeof uv_index !== 'undefined' && uv_index !== undefined ? html`
             <div>
               <ha-icon icon="hass:white-balance-sunny"></ha-icon> UV: ${Math.round(uv_index * 10) / 10}
             </div>
           ` : ''}
-          ${showSun && sun !== undefined ? html`
+          ${showSun && sun ? html`
             <div>
               ${this.renderSun({ sun, language })}
             </div>
@@ -1201,8 +1261,8 @@ return html`
 `;
 }
 
-renderSun({ sun, language, config } = this) {
-  if (sun == undefined) {
+renderSun({ sun, language } = this) {
+  if (!sun || !sun.attributes) {
     return html``;
   }
 
@@ -1221,38 +1281,36 @@ const timeOptions = {
   `;
 }
 
-renderForecastConditionIcons({ config, forecastItems, sun } = this) {
-  const forecast = this.forecasts ? this.forecasts.slice(0, forecastItems) : [];
+renderForecastConditionIcons({ config, sun } = this) {
+  const forecast = this._visibleForecast();
 
   if (config.forecast.condition_icons === false) {
     return html``;
   }
 
   return html`
-    <div class="conditions" @click="${(e) => this.showMoreInfo(config.entity)}">
+    <div class="conditions" @click="${() => this.showMoreInfo(config.entity)}">
       ${forecast.map((item) => {
-        const forecastTime = new Date(item.datetime);
-        const sunriseTime = new Date(sun.attributes.next_rising);
-        const sunsetTime = new Date(sun.attributes.next_setting);
+        let isDayTime = true;
 
-        // Adjust sunrise and sunset times to match the date of forecastTime
-        const adjustedSunriseTime = new Date(forecastTime);
-        adjustedSunriseTime.setHours(sunriseTime.getHours());
-        adjustedSunriseTime.setMinutes(sunriseTime.getMinutes());
-        adjustedSunriseTime.setSeconds(sunriseTime.getSeconds());
+        // Daily forecasts always use day icons. Without sun.sun there is
+        // nothing to compare against, so fall back to day icons as well.
+        if (config.forecast.type !== 'daily' && sun && sun.attributes) {
+          const forecastTime = new Date(item.datetime);
+          const sunriseTime = new Date(sun.attributes.next_rising);
+          const sunsetTime = new Date(sun.attributes.next_setting);
 
-        const adjustedSunsetTime = new Date(forecastTime);
-        adjustedSunsetTime.setHours(sunsetTime.getHours());
-        adjustedSunsetTime.setMinutes(sunsetTime.getMinutes());
-        adjustedSunsetTime.setSeconds(sunsetTime.getSeconds());
+          // Adjust sunrise and sunset times to match the date of forecastTime
+          const adjustedSunriseTime = new Date(forecastTime);
+          adjustedSunriseTime.setHours(sunriseTime.getHours());
+          adjustedSunriseTime.setMinutes(sunriseTime.getMinutes());
+          adjustedSunriseTime.setSeconds(sunriseTime.getSeconds());
 
-        let isDayTime;
+          const adjustedSunsetTime = new Date(forecastTime);
+          adjustedSunsetTime.setHours(sunsetTime.getHours());
+          adjustedSunsetTime.setMinutes(sunsetTime.getMinutes());
+          adjustedSunsetTime.setSeconds(sunsetTime.getSeconds());
 
-        if (config.forecast.type === 'daily') {
-          // For daily forecast, assume it's day time
-          isDayTime = true;
-        } else {
-          // For other forecast types, determine based on sunrise and sunset times
           isDayTime = forecastTime >= adjustedSunriseTime && forecastTime <= adjustedSunsetTime;
         }
 
@@ -1267,7 +1325,7 @@ renderForecastConditionIcons({ config, forecastItems, sun } = this) {
             `${this.config.icons}${weatherIcons[condition]}.svg`;
           iconHtml = html`<img class="icon" src="${iconSrc}" alt="">`;
         } else {
-          iconHtml = html`<ha-icon icon="${this.getWeatherIcon(condition, sun.state)}"></ha-icon>`;
+          iconHtml = html`<ha-icon icon="${this.getWeatherIcon(condition, sun ? sun.state : undefined)}"></ha-icon>`;
         }
 
         return html`
@@ -1280,14 +1338,14 @@ renderForecastConditionIcons({ config, forecastItems, sun } = this) {
   `;
 }
 
-renderWind({ config, weather, windSpeed, windDirection, forecastItems } = this) {
+renderWind({ config } = this) {
   const showWindForecast = config.forecast.show_wind_forecast !== false;
 
   if (!showWindForecast) {
     return html``;
   }
 
-  const forecast = this.forecasts ? this.forecasts.slice(0, forecastItems) : [];
+  const forecast = this._visibleForecast();
 
   return html`
     <div class="wind-details">
@@ -1397,5 +1455,5 @@ window.customCards.push({
   name: "Weather Chart Card",
   description: "A custom weather card with chart.",
   preview: true,
-  documentationURL: "https://github.com/mlamberts78/weather-chart-card",
+  documentationURL: "https://github.com/rmmedia-pl/weather-chart-card",
 });
