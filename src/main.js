@@ -5,6 +5,7 @@ import {
   cardOption,
   forecastOption
 } from './defaults.js';
+import { CARD_VERSION } from './version.js';
 import {
   cardinalDirectionsIcon,
   weatherIcons,
@@ -1483,13 +1484,36 @@ renderLastUpdated() {
   }
 }
 
-customElements.define('weather-chart-card', WeatherChartCard);
+// The module can be evaluated twice: once as a Lovelace resource and once
+// through `frontend.extra_module_url`, which is what gets the element defined
+// before a dashboard starts building its cards. A second bare
+// customElements.define() throws and aborts the rest of the module, so claim
+// the name only when it is still free.
+if (!customElements.get('weather-chart-card')) {
+  customElements.define('weather-chart-card', WeatherChartCard);
+  console.info(
+    `%c WEATHER-CHART-CARD %c v${CARD_VERSION} (rmmedia-pl fork) `,
+    'color: #fff; background: #44739e; font-weight: 700',
+    'color: #44739e; background: #fff; font-weight: 700',
+  );
+} else {
+  // Two copies at different URLs: whichever loaded first owns the name, and
+  // this one does nothing. Say so, otherwise a stale extra_module_url silently
+  // keeps an old card running after an update.
+  console.warn(
+    `[weather-chart-card] v${CARD_VERSION} loaded, but the element is already ` +
+    'registered by another copy - this one stays idle. Check that the Lovelace ' +
+    'resource and frontend.extra_module_url point at the same URL.',
+  );
+}
 
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "weather-chart-card",
-  name: "Weather Chart Card",
-  description: "A custom weather card with chart.",
-  preview: true,
-  documentationURL: "https://github.com/rmmedia-pl/weather-chart-card",
-});
+if (!window.customCards.some((card) => card.type === 'weather-chart-card')) {
+  window.customCards.push({
+    type: "weather-chart-card",
+    name: "Weather Chart Card",
+    description: "A custom weather card with chart.",
+    preview: true,
+    documentationURL: "https://github.com/rmmedia-pl/weather-chart-card",
+  });
+}

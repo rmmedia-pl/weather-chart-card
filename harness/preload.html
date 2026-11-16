@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>weather-chart-card double-load harness</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 14px; background: #ececec;
+         --card-background-color: #fff; --primary-text-color: #212121;
+         --secondary-text-color: #727272; --divider-color: #bdbdbd;
+         --paper-item-icon-color: #44739e; }
+  ha-card { display: block; position: relative; background: var(--card-background-color);
+            border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  #log { font: 12px/1.5 ui-monospace, monospace; background: #fff; border: 1px solid #ccc;
+         padding: 6px; margin-bottom: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="log">(waiting)</div>
+<div id="host" style="width: 500px"></div>
+
+<script>
+  // Same stubs as the other harnesses: an undefined <ha-icon> has no size and
+  // an <ha-card> without position:relative lets the clock escape the card.
+  class HaIconStub extends HTMLElement {
+    connectedCallback() {
+      if (this.shadowRoot) return;
+      const r = this.attachShadow({ mode: 'open' });
+      r.innerHTML = `<style>
+        :host { display: inline-block; width: var(--mdc-icon-size, 24px); height: var(--mdc-icon-size, 24px); vertical-align: middle; }
+        svg { width: 100%; height: 100%; display: block; }
+      </style><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>`;
+    }
+  }
+  customElements.define('ha-icon', HaIconStub);
+  class HaCardStub extends HTMLElement {
+    connectedCallback() {
+      if (this.shadowRoot) return;
+      const r = this.attachShadow({ mode: 'open' });
+      r.innerHTML = `<style>:host { display: block; position: relative; }</style><slot></slot>`;
+    }
+  }
+  customElements.define('ha-card', HaCardStub);
+  window.__errors = [];
+  addEventListener('error', (e) => window.__errors.push('error: ' + e.message));
+  addEventListener('unhandledrejection', (e) => window.__errors.push('rejection: ' + e.reason));
+</script>
+
+<!-- The point of this page: Home Assistant can load the bundle twice - once as
+     a Lovelace resource and once through frontend.extra_module_url - and it
+     loads it the way it is declared, as `type: module`. Identical URLs are
+     deduped by the module map; a differing query string is a second module
+     with its own scope, and its customElements.define() used to throw
+     NotSupportedError and abort the rest of the module. Both cases here. -->
+<script type="module" src="../dist/weather-chart-card.js"></script>
+<script type="module" src="../dist/weather-chart-card.js"></script>
+<script type="module" src="../dist/weather-chart-card.js?v=preload"></script>
+
+<script type="module">
+const CONFIG = {
+  entity: 'weather.home', locale: 'pl', icons_size: 20, animated_icons: false,
+  show_main: true, show_attributes: true, show_humidity: true, show_pressure: true,
+  forecast: { type: 'daily', style: 'style2', labels_font_size: '12', precip_bar_size: '80' },
+  units: { pressure: '', speed: '' },
+};
+const NOW = new Date();
+const FORECAST = [0, 1, 2].map((i) => {
+  const d = new Date(NOW); d.setHours(11, 0, 0, 0); d.setDate(d.getDate() + i);
+  return { datetime: d.toISOString(), condition: 'rainy', temperature: 7 - i, templow: 3 - i,
+           precipitation: i, precipitation_probability: 20 * i, wind_speed: 18, wind_bearing: 210 };
+});
+const HASS = {
+  language: 'pl', selectedLanguage: 'pl',
+  states: { 'weather.home': { entity_id: 'weather.home', state: 'rainy',
+    last_changed: NOW.toISOString(),
+    attributes: { temperature: 6.6, humidity: 94, pressure: 1006.3, wind_speed: 18.7,
+      wind_bearing: 209.5, temperature_unit: '°C', pressure_unit: 'hPa',
+      wind_speed_unit: 'km/h', precipitation_unit: 'mm', supported_features: 3 } } },
+  config: { unit_system: { temperature: '°C', length: 'km' } },
+  connection: { subscribeMessage(cb) { setTimeout(() => cb({ forecast: FORECAST }), 0); return Promise.resolve(() => {}); } },
+  callWS: () => Promise.resolve({}),
+};
+
+const results = [];
+const check = (name, ok, detail) => results.push((ok ? 'PASS ' : 'FAIL ') + name + (detail ? ' - ' + detail : ''));
+
+check('no uncaught error from the second evaluation', window.__errors.length === 0, window.__errors.join('; '));
+check('element is registered', !!customElements.get('weather-chart-card'));
+const entries = (window.customCards || []).filter((c) => c.type === 'weather-chart-card');
+check('registered in the card picker exactly once', entries.length === 1, 'entries=' + entries.length);
+
+const el = document.createElement('weather-chart-card');
+el.setConfig(JSON.parse(JSON.stringify(CONFIG)));
+document.getElementById('host').appendChild(el);
+el.hass = HASS;
+
+setTimeout(() => {
+  const card = el.shadowRoot && el.shadowRoot.querySelector('ha-card');
+  check('card renders after a double load', !!card && card.getBoundingClientRect().height > 80,
+        card ? 'height=' + Math.round(card.getBoundingClientRect().height) : 'no ha-card');
+  const canvas = el.shadowRoot && el.shadowRoot.querySelector('#forecastChart');
+  check('chart canvas has a drawing area', !!canvas && canvas.getBoundingClientRect().width > 100,
+        canvas ? 'width=' + Math.round(canvas.getBoundingClientRect().width) : 'no canvas');
+  window.__results = results;
+  document.getElementById('log').textContent = results.join('\n');
+}, 1200);
+</script>
+</body>
+</html>
