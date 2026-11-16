@@ -564,7 +564,9 @@ drawChart({ config, language } = this) {
   // Math.min/max would treat null gaps as 0.
   const temps = [...data.tempHigh, ...data.tempLow].filter((t) => t !== null);
 
-  var style = getComputedStyle(document.body);
+  // Read the theme from the card, not from <body>: a theme set on the card or
+  // the view, and anything card-mod injects, never reached document.body.
+  var style = getComputedStyle(this);
   var backgroundColor = style.getPropertyValue('--card-background-color');
   var textColor = style.getPropertyValue('--primary-text-color');
   var dividerColor = style.getPropertyValue('--divider-color');
