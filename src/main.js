@@ -537,12 +537,14 @@ drawChart({ config, language } = this) {
   }
   var tempUnit = this._hass.config.unit_system.temperature;
   var lengthUnit = this._hass.config.unit_system.length;
-  var precipUnit;
-  if (config.forecast.precipitation_type === 'probability') {
-    precipUnit = '%';
-  } else {
-    precipUnit = lengthUnit === 'km' ? this.ll('units')['mm'] : this.ll('units')['in'];
-  }
+  // The precipitation unit belongs to the weather entity, not to the system
+  // length unit: an entity can report mm while the system is imperial, and
+  // the bars were then labelled (and scaled) in inches.
+  const precipitationUnit = (this.weather && this.weather.attributes.precipitation_unit)
+    || (lengthUnit === 'km' ? 'mm' : 'in');
+  const precipUnit = config.forecast.precipitation_type === 'probability'
+    ? '%'
+    : this.unitLabel(precipitationUnit);
   const data = this.computeForecastData();
   // Math.min/max would treat null gaps as 0.
   const temps = [...data.tempHigh, ...data.tempLow].filter((t) => t !== null);
@@ -564,10 +566,11 @@ drawChart({ config, language } = this) {
   if (config.forecast.precipitation_type === 'probability') {
     precipMax = 100;
   } else {
+    const metricPrecip = precipitationUnit !== 'in';
     if (config.forecast.type === 'hourly') {
-      precipMax = lengthUnit === 'km' ? 4 : 1;
+      precipMax = metricPrecip ? 4 : 1;
     } else {
-      precipMax = lengthUnit === 'km' ? 20 : 1;
+      precipMax = metricPrecip ? 20 : 1;
     }
   }
 
