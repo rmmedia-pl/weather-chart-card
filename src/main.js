@@ -138,12 +138,17 @@ set hass(hass) {
   this._hass = hass;
   this.language = this.config.locale || hass.selectedLanguage || hass.language;
   this.sun = 'sun.sun' in hass.states ? hass.states['sun.sun'] : null;
-  this.unitSpeed = this.config.units.speed ? this.config.units.speed : this.weather && this.weather.attributes.wind_speed_unit;
-  this.unitPressure = this.config.units.pressure ? this.config.units.pressure : this.weather && this.weather.attributes.pressure_unit;
-  this.unitVisibility = this.config.units.visibility ? this.config.units.visibility : this.weather && this.weather.attributes.visibility_unit;
   this.weather = this.config.entity in hass.states
     ? hass.states[this.config.entity]
     : null;
+
+  // Units come from the weather entity, so they have to be read after it has
+  // been assigned. Reading them first meant the first render had no unit at
+  // all, which also skipped the rounding that depends on it.
+  const weatherAttrs = this.weather ? this.weather.attributes : {};
+  this.unitSpeed = this.config.units.speed || weatherAttrs.wind_speed_unit;
+  this.unitPressure = this.config.units.pressure || weatherAttrs.pressure_unit;
+  this.unitVisibility = this.config.units.visibility || weatherAttrs.visibility_unit;
 
   if (this.weather) {
     const attrs = this.weather.attributes;
