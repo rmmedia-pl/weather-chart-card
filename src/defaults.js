@@ -26,6 +26,10 @@ const CARD_OPTION_DEFAULTS = {
   show_last_changed: false,
   show_time: false,
   show_time_seconds: false,
+  // Translucent card over a blurred background. Only worth turning on when
+  // something is actually visible behind the card, such as a view background
+  // image - over a flat background it is just a lighter card.
+  glass: false,
   show_day: false,
   show_date: false,
   use_12hour_format: false,
@@ -36,6 +40,10 @@ const CARD_OPTION_DEFAULTS = {
 const FORECAST_OPTION_DEFAULTS = {
   condition_icons: true,
   show_wind_forecast: true,
+  // Precipitation bars fade towards the top; temperature lines are coloured
+  // by value instead of one flat colour each.
+  precip_gradient: true,
+  temperature_gradient: true,
   round_temp: false,
   show_probability: false,
   disable_animation: false,

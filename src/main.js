@@ -6,6 +6,8 @@ import {
   forecastOption
 } from './defaults.js';
 import { CARD_VERSION } from './version.js';
+import { temperatureGradientStops } from './gradients.js';
+import { color as chartColor } from 'chart.js/helpers';
 import {
   cardinalDirectionsIcon,
   weatherIcons,
@@ -105,6 +107,7 @@ setConfig(config) {
     icons_size: 25,
     icon_style: 'style1',
     current_temp_size: 28,
+    current_condition_size: 20,
     time_size: 26,
     day_date_size: 15,
     // On/off options come from defaults.js, which the editor reads too.
@@ -631,13 +634,26 @@ drawChart({ config, language } = this) {
   Chart.defaults.elements.point.radius = 2;
   Chart.defaults.elements.point.hitRadius = 10;
 
+  // Flat colours for the datalabels. The datasets' own colours may be
+  // CanvasGradients from here on, and a gradient as a label border paints
+  // nothing - so the labels keep their own plain colours.
+  const labelColors = [
+    config.forecast.temperature1_color,
+    config.forecast.temperature2_color,
+    config.forecast.precipitation_color,
+  ];
+  const tempGradient = forecastOption(config.forecast, 'temperature_gradient');
+  const precipGradient = forecastOption(config.forecast, 'precip_gradient');
+
   var datasets = [
     {
       label: this.ll('tempHi'),
       type: 'line',
       data: data.tempHigh,
       yAxisID: 'TempAxis',
-      borderColor: config.forecast.temperature1_color,
+      borderColor: tempGradient
+        ? (context) => this.temperatureGradient(context, config.forecast.temperature1_color)
+        : config.forecast.temperature1_color,
       backgroundColor: config.forecast.temperature1_color,
     },
     {
@@ -645,7 +661,9 @@ drawChart({ config, language } = this) {
       type: 'line',
       data: data.tempLow,
       yAxisID: 'TempAxis',
-      borderColor: config.forecast.temperature2_color,
+      borderColor: tempGradient
+        ? (context) => this.temperatureGradient(context, config.forecast.temperature2_color)
+        : config.forecast.temperature2_color,
       backgroundColor: config.forecast.temperature2_color,
     },
     {
@@ -654,7 +672,10 @@ drawChart({ config, language } = this) {
       data: data.precip,
       yAxisID: 'PrecipAxis',
       borderColor: config.forecast.precipitation_color,
-      backgroundColor: config.forecast.precipitation_color,
+      backgroundColor: precipGradient
+        ? (context) => this.precipitationGradient(context, config.forecast.precipitation_color)
+        : config.forecast.precipitation_color,
+      borderRadius: 3,
       barPercentage: config.forecast.precip_bar_size / 100,
       categoryPercentage: 1.0,
       datalabels: {
@@ -829,7 +850,7 @@ drawChart({ config, language } = this) {
         },
         datalabels: {
           backgroundColor: backgroundColor,
-          borderColor: context => context.dataset.backgroundColor,
+          borderColor: context => labelColors[context.datasetIndex] || textColor,
           borderRadius: 0,
           borderWidth: 1.5,
           padding: config.forecast.precipitation_type === 'rainfall' && config.forecast.show_probability && config.forecast.type !== 'hourly' ? 3 : 4,
@@ -957,6 +978,20 @@ updateChart({ forecasts, forecastChart } = this) {
     }
     return html`
       <style>
+        ${cardOption(config, 'glass') ? `
+        /* Frosted glass. backdrop-filter blurs whatever is painted BEHIND the
+           card, so this only shows when something is there - a view background
+           image, say. Inside another card with a solid background it blurs
+           that card and looks like a plain lighter panel.
+           color-mix keeps the theme's own card colour instead of a hard-coded
+           one; browsers without it fall back to the untouched card. */
+        ha-card {
+          background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color)) 55%, transparent);
+          -webkit-backdrop-filter: blur(16px) saturate(150%);
+          backdrop-filter: blur(16px) saturate(150%);
+          border: 1px solid color-mix(in srgb, var(--primary-text-color) 10%, transparent);
+        }
+        ` : ''}
         ha-icon {
           color: var(--paper-item-icon-color);
         }
@@ -972,79 +1007,95 @@ updateChart({ forecasts, forecastChart } = this) {
         }
         /* The clock is positioned absolutely in the card's top right corner,
            so when it is shown the header has to keep that corner free. */
-        .header.with-clock {
-          padding-right: calc(${config.time_size}px * 4.2);
-          padding-inline-end: calc(${config.time_size}px * 4.2);
-          padding-inline-start: initial;
-        }
+        /* The top is two blocks on one line: conditions on the left, the
+           reading on the right. The clock used to be positioned absolutely
+           against the card, which put it on top of whatever sat in the right
+           corner - it is a normal part of the right block now. */
         .header {
           display: flex;
-          flex-wrap: wrap;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 10px 20px;
+          flex-direction: column;
+          gap: 10px;
           margin-bottom: 14px;
         }
         .main {
           display: flex;
           align-items: center;
-          font-size: ${config.current_temp_size}px;
-          flex: 0 1 auto;
+          justify-content: space-between;
+          gap: 12px;
+        }
+        .main-left {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          min-width: 0;
+        }
+        .main-right {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-end;
+          text-align: right;
+          flex: none;
+        }
+        .main-text {
           min-width: 0;
         }
         .main ha-icon {
-          --mdc-icon-size: 50px;
-          margin-right: 14px;
-          margin-inline-start: initial;
-          margin-inline-end: 14px;
+          --mdc-icon-size: ${config.icons_size * 2}px;
+          flex: none;
+          color: var(--paper-item-icon-color);
         }
         .main img {
           width: ${config.icons_size * 2}px;
           height: ${config.icons_size * 2}px;
-          margin-right: 14px;
-          margin-inline-start: initial;
-          margin-inline-end: 14px;
+          flex: none;
         }
-        .main div {
-          line-height: 1.1;
+        /* Wraps rather than truncates: on a phone-width card "Częściowe
+           zachmurzenie" lost its ending to an ellipsis, and a condition you
+           cannot read is worse than a card one line taller. */
+        .current-condition {
+          font-size: ${config.current_condition_size}px;
+          line-height: 1.2;
+          overflow-wrap: anywhere;
         }
-        .main span {
-          font-size: 18px;
-          color: var(--secondary-text-color);
+        .temperature {
+          font-size: ${config.current_temp_size}px;
+          line-height: 1.05;
+          white-space: nowrap;
         }
+        .temp-unit {
+          font-size: 0.55em;
+          margin-left: 1px;
+          margin-inline-start: 1px;
+          margin-inline-end: initial;
+        }
+        /* One row of readings under the main line, spread across the card.
+           They wrap instead of shrinking, so a narrow card gets two rows
+           rather than unreadable text. */
         .attributes {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
-          align-items: start;
-          gap: 2px 14px;
-          flex: 1 1 240px;
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          justify-content: space-between;
+          gap: 4px 16px;
           font-weight: 300;
           direction: ltr;
         }
-        /* One reading: icon, value, unit. A grid cell each, so the columns
-           line up instead of three stacks floating against each other. */
         .attribute {
           display: flex;
           align-items: center;
-          gap: 5px;
-          line-height: 1.7;
+          gap: 6px;
+          line-height: 1.6;
           white-space: nowrap;
-        }
-        /* Direction plus speed is the one reading that needs more room than a
-           single column, so it takes two instead of being squeezed. */
-        .attribute.wind {
-          grid-column: span 2;
         }
         .attribute ha-icon {
           --mdc-icon-size: 19px;
           flex: none;
           color: var(--paper-item-icon-color);
         }
-        .attr-value {
-          font-size: 14px;
-        }
+        /* No font-size here on purpose: pinning it to 14px in 1.3.0 made the
+           readings smaller than the rest of the card. They inherit again. */
         .attr-unit {
-          font-size: 12px;
+          font-size: 0.85em;
           color: var(--secondary-text-color);
           margin-left: 3px;
           margin-inline-start: 3px;
@@ -1081,7 +1132,7 @@ updateChart({ forecasts, forecastChart } = this) {
           margin: 1px;
         }
         .wind-detail ha-icon {
-          --mdc-icon-size: 15px;
+          --mdc-icon-size: 16px;
           margin-right: 1px;
           margin-inline-start: initial;
           margin-inline-end: 1px;
@@ -1094,24 +1145,22 @@ updateChart({ forecasts, forecastChart } = this) {
 	        bottom: 1px;
         }
         .wind-speed {
-          font-size: 11px;
+          font-size: 12px;
           margin-right: 1px;
           margin-inline-start: initial;
           margin-inline-end: 1px;
         }
         .wind-unit {
-          font-size: 9px;
+          font-size: 11px;
+          color: var(--secondary-text-color);
           margin-left: 1px;
           margin-inline-start: 1px;
           margin-inline-end: initial;
         }
         .current-time {
-          position: absolute;
-          top: 20px;
-          right: 16px;
-          inset-inline-start: initial;
-          inset-inline-end: 16px;
           font-size: ${config.time_size}px;
+          line-height: 1.1;
+          text-align: right;
         }
         .date-text {
           font-size: ${config.day_date_size}px;
@@ -1119,14 +1168,16 @@ updateChart({ forecasts, forecastChart } = this) {
         }
         .main .feels-like {
           font-size: 13px;
-          margin-top: 5px;
+          margin-top: 2px;
           font-weight: 400;
+          color: var(--secondary-text-color);
         }
         .main .description {
-	  font-style: italic;
+          font-style: italic;
           font-size: 13px;
-          margin-top: 5px;
+          margin-top: 2px;
           font-weight: 400;
+          color: var(--secondary-text-color);
         }
         .updated {
           font-size: 13px;
@@ -1138,7 +1189,7 @@ updateChart({ forecasts, forecastChart } = this) {
 
       <ha-card header="${config.title}">
         <div class="card">
-          <div class="header${config.show_time ? ' with-clock' : ''}">
+          <div class="header">
             ${this.renderMain()}
             ${this.renderAttributes()}
           </div>
@@ -1182,27 +1233,18 @@ renderMain({ config, sun, weather, temperature, feels_like, description } = this
 
   return html`
     <div class="main">
-      ${iconHtml}
-      <div>
-        <div>
-          ${showTemperature ? html`${roundedTemperature}<span>${this.getUnit('temperature')}</span>` : ''}
-          ${showFeelsLike && roundedFeelsLike ? html`
-            <div class="feels-like">
-              ${this.ll('feelsLike')}
-              ${roundedFeelsLike}${this.getUnit('temperature')}
-            </div>
-          ` : ''}
+      <div class="main-left">
+        ${iconHtml}
+        <div class="main-text">
           ${showCurrentCondition ? html`
-            <div class="current-condition">
-              <span>${this.ll(weather.state)}</span>
-            </div>
+            <div class="current-condition">${this.ll(weather.state)}</div>
           ` : ''}
           ${showDescription ? html`
-            <div class="description">
-              ${description}
-            </div>
+            <div class="description">${description}</div>
           ` : ''}
         </div>
+      </div>
+      <div class="main-right">
         ${showTime ? html`
           <div class="current-time">
             <div id="digital-clock"></div>
@@ -1210,6 +1252,12 @@ renderMain({ config, sun, weather, temperature, feels_like, description } = this
             ${showDay && showDate ? html` ` : ''}
             ${showDate ? html`<div class="date-text date"></div>` : ''}
           </div>
+        ` : ''}
+        ${showTemperature ? html`
+          <div class="temperature">${roundedTemperature}<span class="temp-unit">${this.getUnit('temperature')}</span></div>
+        ` : ''}
+        ${showFeelsLike && roundedFeelsLike ? html`
+          <div class="feels-like">${this.ll('feelsLike')} ${roundedFeelsLike}${this.getUnit('temperature')}</div>
         ` : ''}
       </div>
     </div>
@@ -1253,6 +1301,49 @@ syncClock() {
     clearInterval(this.clockInterval);
     this.clockInterval = null;
   }
+}
+
+// A vertical gradient over the chart area, from `stops` given bottom-up.
+// Chart.js calls the colour functions before the first layout, when the area
+// is not known yet - the caller's flat colour is the answer then.
+canvasGradient(context, stops, fallback) {
+  const chart = context.chart;
+  const area = chart.chartArea;
+  if (!area || area.bottom === area.top || !stops.length) {
+    return fallback;
+  }
+  const gradient = chart.ctx.createLinearGradient(0, area.bottom, 0, area.top);
+  for (const [offset, color] of stops) {
+    gradient.addColorStop(Math.min(1, Math.max(0, offset)), color);
+  }
+  return gradient;
+}
+
+// Temperature lines coloured by value: cold blue at the bottom of the axis,
+// warm red at the top, interpolated at the ends so any range gets a gradient.
+temperatureGradient(context, fallback) {
+  const scale = context.chart.scales && context.chart.scales.TempAxis;
+  if (!scale || !Number.isFinite(scale.min) || !Number.isFinite(scale.max)) {
+    return fallback;
+  }
+  const stops = temperatureGradientStops(scale.min, scale.max, this.getUnit('temperature'));
+  return this.canvasGradient(context, stops, fallback);
+}
+
+// Precipitation bars keep their colour where they meet the axis and fade
+// towards the top, so they sit behind the temperature lines instead of
+// competing with them.
+precipitationGradient(context, baseColor) {
+  let faded = baseColor;
+  try {
+    const parsed = chartColor(baseColor);
+    if (parsed && parsed.valid) {
+      faded = parsed.alpha(parsed.rgb.a * 0.25).rgbString();
+    }
+  } catch {
+    faded = baseColor;
+  }
+  return this.canvasGradient(context, [[0, baseColor], [1, faded]], baseColor);
 }
 
 renderAttributes({ config, humidity, pressure, windSpeed, windDirection, sun, language, uv_index, dew_point, wind_gust_speed, visibility } = this) {
