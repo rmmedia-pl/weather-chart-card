@@ -837,6 +837,109 @@ const WeatherEntityFeature = {
   FORECAST_DAILY: 1,
   FORECAST_HOURLY: 2};
 
+// Unit conversions and wind-bearing maths.
+//
+// Everything here is a pure function: no DOM, no Home Assistant objects, no
+// `this`. That is deliberate — it is the part of the card that is easy to get
+// wrong and the only part covered by unit tests (`npm test`).
+//
+// Unknown units are never fatal. A conversion asked for in a unit this table
+// does not know returns the value unchanged, so an exotic `wind_speed_unit`
+// shows a slightly wrong label instead of taking the whole card down.
+
+// Multipliers to the base unit (m/s for speed, hPa for pressure).
+const SPEED_TO_MS = {
+  'm/s': 1,
+  'km/h': 1 / 3.6,
+  'mph': 0.44704,
+  'kn': 0.5144444444444445,
+  'kt': 0.5144444444444445,
+  'knot': 0.5144444444444445,
+  'knots': 0.5144444444444445,
+  'ft/s': 0.3048,
+};
+
+const PRESSURE_TO_HPA = {
+  'hPa': 1,
+  'mbar': 1,
+  'mmHg': 1.3332236842105263,
+  'inHg': 33.86388666666671,
+  'kPa': 10,
+  'psi': 68.94757293168361,
+};
+
+// Upper bounds of Beaufort 0..11 in km/h; anything above is 12.
+const BEAUFORT_MAX_KMH = [1, 6, 12, 20, 29, 39, 50, 62, 75, 89, 103, 118];
+
+// Numbers arrive both as numbers (attributes) and as strings (sensor states).
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const n = typeof value === 'number' ? value : parseFloat(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function convert(value, from, to, table) {
+  const n = toNumber(value);
+  if (n === null) {
+    return null;
+  }
+  if (from === to) {
+    return n;
+  }
+  const fromFactor = table[from];
+  const toFactor = table[to];
+  if (typeof fromFactor !== 'number' || typeof toFactor !== 'number') {
+    return n;
+  }
+  return (n * fromFactor) / toFactor;
+}
+
+function convertSpeed(value, from, to) {
+  return convert(value, from, to, SPEED_TO_MS);
+}
+
+function convertPressure(value, from, to) {
+  return convert(value, from, to, PRESSURE_TO_HPA);
+}
+
+function isKnownSpeedUnit(unit) {
+  return typeof unit === 'string' && Object.prototype.hasOwnProperty.call(SPEED_TO_MS, unit);
+}
+
+function isKnownPressureUnit(unit) {
+  return typeof unit === 'string' && Object.prototype.hasOwnProperty.call(PRESSURE_TO_HPA, unit);
+}
+
+// Beaufort number, or null when the source unit is not convertible — the
+// caller then shows the raw speed instead of crashing on an exception.
+function beaufortFromSpeed(value, unit) {
+  const n = toNumber(value);
+  if (n === null || !isKnownSpeedUnit(unit)) {
+    return null;
+  }
+  const kmh = convertSpeed(n, unit, 'km/h');
+  const index = BEAUFORT_MAX_KMH.findIndex((max) => kmh < max);
+  return index === -1 ? 12 : index;
+}
+
+// Pressure keeps the rounding the card has always used: whole units for the
+// coarse ones, decimals where a whole number would hide every change.
+function roundPressure(value, unit) {
+  const n = toNumber(value);
+  if (n === null) {
+    return null;
+  }
+  if (unit === 'inHg' || unit === 'psi') {
+    return n.toFixed(2);
+  }
+  if (unit === 'kPa') {
+    return n.toFixed(1);
+  }
+  return Math.round(n);
+}
+
 /**
  * @license
  * Copyright 2019 Google LLC
@@ -18336,39 +18439,65 @@ getWindDir(deg) {
   }
 }
 
-calculateBeaufortScale(windSpeed) {
-  const unitConversion = {
-    'km/h': 1,
-    'm/s': 3.6,
-    'mph': 1.60934,
-  };
+// Localised unit label, falling back to the unit itself. The locale files
+// only carry eight units, so inHg and the like had no label at all.
+unitLabel(unit) {
+  if (!unit) {
+    return '';
+  }
+  const labels = this.ll('units');
+  const label = labels && labels[unit];
+  return label === undefined ? unit : label;
+}
 
-  if (!this.weather || !this.weather.attributes.wind_speed_unit) {
-    throw new Error('wind_speed_unit not available in weather attributes.');
+// A wind speed as it should be shown: the value converted to the configured
+// unit, together with the label that belongs to *that* number. Used for the
+// current speed, the gusts and every forecast column, so the three can no
+// longer disagree.
+displaySpeed(value) {
+  const sourceUnit = this.weather && this.weather.attributes.wind_speed_unit;
+  const target = this.unitSpeed;
+  const raw = toNumber(value);
+
+  if (raw === null) {
+    return { value: undefined, unit: this.unitLabel(target) };
   }
 
-  const wind_speed_unit = this.weather.attributes.wind_speed_unit;
-  const conversionFactor = unitConversion[wind_speed_unit];
-
-  if (typeof conversionFactor !== 'number') {
-    throw new Error(`Unknown wind_speed_unit: ${wind_speed_unit}`);
+  if (target === 'Bft') {
+    const force = beaufortFromSpeed(raw, sourceUnit);
+    // An unconvertible source unit used to throw and kill the render.
+    return force === null
+      ? { value: Math.round(raw), unit: this.unitLabel(sourceUnit) }
+      : { value: force, unit: this.unitLabel('Bft') };
   }
 
-  const windSpeedInKmPerHour = windSpeed * conversionFactor;
+  if (target === sourceUnit) {
+    return { value: Math.round(raw), unit: this.unitLabel(target) };
+  }
 
-  if (windSpeedInKmPerHour < 1) return 0;
-  else if (windSpeedInKmPerHour < 6) return 1;
-  else if (windSpeedInKmPerHour < 12) return 2;
-  else if (windSpeedInKmPerHour < 20) return 3;
-  else if (windSpeedInKmPerHour < 29) return 4;
-  else if (windSpeedInKmPerHour < 39) return 5;
-  else if (windSpeedInKmPerHour < 50) return 6;
-  else if (windSpeedInKmPerHour < 62) return 7;
-  else if (windSpeedInKmPerHour < 75) return 8;
-  else if (windSpeedInKmPerHour < 89) return 9;
-  else if (windSpeedInKmPerHour < 103) return 10;
-  else if (windSpeedInKmPerHour < 118) return 11;
-  else return 12;
+  if (isKnownSpeedUnit(sourceUnit) && isKnownSpeedUnit(target)) {
+    return { value: Math.round(convertSpeed(raw, sourceUnit, target)), unit: this.unitLabel(target) };
+  }
+
+  // Cannot convert: show the number we were given, labelled honestly.
+  return { value: Math.round(raw), unit: this.unitLabel(sourceUnit) };
+}
+
+displayPressure(value) {
+  const sourceUnit = this.weather && this.weather.attributes.pressure_unit;
+  const target = this.unitPressure;
+  const raw = toNumber(value);
+
+  if (raw === null) {
+    return { value: undefined, unit: this.unitLabel(target) };
+  }
+
+  if (target !== sourceUnit && isKnownPressureUnit(sourceUnit) && isKnownPressureUnit(target)) {
+    return { value: roundPressure(convertPressure(raw, sourceUnit, target), target), unit: this.unitLabel(target) };
+  }
+
+  const unit = target === sourceUnit ? target : sourceUnit;
+  return { value: roundPressure(raw, unit), unit: this.unitLabel(unit) };
 }
 
 async firstUpdated(changedProperties) {
@@ -19088,61 +19217,13 @@ syncClock() {
 }
 
 renderAttributes({ config, humidity, pressure, windSpeed, windDirection, sun, language, uv_index, dew_point, wind_gust_speed, visibility } = this) {
-  let dWindSpeed = windSpeed;
-  let dPressure = pressure;
-
-  if (this.unitSpeed !== this.weather.attributes.wind_speed_unit) {
-    if (this.unitSpeed === 'm/s') {
-      if (this.weather.attributes.wind_speed_unit === 'km/h') {
-        dWindSpeed = Math.round(windSpeed * 1000 / 3600);
-      } else if (this.weather.attributes.wind_speed_unit === 'mph') {
-        dWindSpeed = Math.round(windSpeed * 0.44704);
-      }
-    } else if (this.unitSpeed === 'km/h') {
-      if (this.weather.attributes.wind_speed_unit === 'm/s') {
-        dWindSpeed = Math.round(windSpeed * 3.6);
-      } else if (this.weather.attributes.wind_speed_unit === 'mph') {
-        dWindSpeed = Math.round(windSpeed * 1.60934);
-      }
-    } else if (this.unitSpeed === 'mph') {
-      if (this.weather.attributes.wind_speed_unit === 'm/s') {
-        dWindSpeed = Math.round(windSpeed / 0.44704);
-      } else if (this.weather.attributes.wind_speed_unit === 'km/h') {
-        dWindSpeed = Math.round(windSpeed / 1.60934);
-      }
-    } else if (this.unitSpeed === 'Bft') {
-      dWindSpeed = this.calculateBeaufortScale(windSpeed);
-    }
-  } else {
-    dWindSpeed = Math.round(dWindSpeed);
-  }
-
-  if (this.unitPressure !== this.weather.attributes.pressure_unit) {
-    if (this.unitPressure === 'mmHg') {
-      if (this.weather.attributes.pressure_unit === 'hPa') {
-        dPressure = Math.round(pressure * 0.75006);
-      } else if (this.weather.attributes.pressure_unit === 'inHg') {
-        dPressure = Math.round(pressure * 25.4);
-      }
-    } else if (this.unitPressure === 'hPa') {
-      if (this.weather.attributes.pressure_unit === 'mmHg') {
-        dPressure = Math.round(pressure / 0.75006);
-      } else if (this.weather.attributes.pressure_unit === 'inHg') {
-        dPressure = Math.round(pressure * 33.8639);
-      }
-    } else if (this.unitPressure === 'inHg') {
-      if (this.weather.attributes.pressure_unit === 'mmHg') {
-        dPressure = pressure / 25.4;
-      } else if (this.weather.attributes.pressure_unit === 'hPa') {
-        dPressure = pressure / 33.8639;
-      }
-      dPressure = dPressure.toFixed(2);
-    }
-  } else {
-    if (this.unitPressure === 'hPa' || this.unitPressure === 'mmHg') {
-      dPressure = Math.round(dPressure);
-    }
-  }
+  const wind = this.displaySpeed(windSpeed);
+  // The gusts used to be printed raw next to the *target* unit's label, so
+  // with units.speed: Bft they showed km/h under a "Bft" heading.
+  const gust = this.displaySpeed(wind_gust_speed);
+  const press = this.displayPressure(pressure);
+  const dWindSpeed = wind.value;
+  const dPressure = press.value;
 
   if (config.show_attributes == false)
     return x``;
@@ -19164,7 +19245,7 @@ return x`
             <ha-icon icon="hass:water-percent"></ha-icon> ${humidity} %<br>
           ` : ''}
           ${showPressure && dPressure !== undefined ? x`
-            <ha-icon icon="hass:gauge"></ha-icon> ${dPressure} ${this.ll('units')[this.unitPressure]} <br>
+            <ha-icon icon="hass:gauge"></ha-icon> ${dPressure} ${press.unit} <br>
           ` : ''}
           ${showDewpoint && dew_point !== undefined ? x`
             <ha-icon icon="hass:thermometer-water"></ha-icon> ${dew_point} ${this.weather.attributes.temperature_unit} <br>
@@ -19195,11 +19276,11 @@ return x`
           ` : ''}
           ${showWindSpeed && dWindSpeed !== undefined ? x`
             <ha-icon icon="hass:weather-windy"></ha-icon>
-            ${dWindSpeed} ${this.ll('units')[this.unitSpeed]} <br>
+            ${dWindSpeed} ${wind.unit} <br>
           ` : ''}
-          ${showWindgustspeed && wind_gust_speed !== undefined ? x`
+          ${showWindgustspeed && gust.value !== undefined ? x`
             <ha-icon icon="hass:weather-windy-variant"></ha-icon>
-            ${wind_gust_speed} ${this.ll('units')[this.unitSpeed]}
+            ${gust.value} ${gust.unit}
           ` : ''}
         </div>
       ` : ''}
@@ -19297,39 +19378,13 @@ renderWind({ config } = this) {
     <div class="wind-details">
       ${showWindForecast ? x`
         ${forecast.map((item) => {
-          let dWindSpeed = item.wind_speed;
-
-          if (this.unitSpeed !== this.weather.attributes.wind_speed_unit) {
-            if (this.unitSpeed === 'm/s') {
-              if (this.weather.attributes.wind_speed_unit === 'km/h') {
-                dWindSpeed = Math.round(item.wind_speed * 1000 / 3600);
-              } else if (this.weather.attributes.wind_speed_unit === 'mph') {
-                dWindSpeed = Math.round(item.wind_speed * 0.44704);
-              }
-            } else if (this.unitSpeed === 'km/h') {
-              if (this.weather.attributes.wind_speed_unit === 'm/s') {
-                dWindSpeed = Math.round(item.wind_speed * 3.6);
-              } else if (this.weather.attributes.wind_speed_unit === 'mph') {
-                dWindSpeed = Math.round(item.wind_speed * 1.60934);
-              }
-            } else if (this.unitSpeed === 'mph') {
-              if (this.weather.attributes.wind_speed_unit === 'm/s') {
-                dWindSpeed = Math.round(item.wind_speed / 0.44704);
-              } else if (this.weather.attributes.wind_speed_unit === 'km/h') {
-                dWindSpeed = Math.round(item.wind_speed / 1.60934);
-              }
-            } else if (this.unitSpeed === 'Bft') {
-              dWindSpeed = this.calculateBeaufortScale(item.wind_speed);
-            }
-          } else {
-            dWindSpeed = Math.round(dWindSpeed);
-          }
+          const itemWind = this.displaySpeed(item.wind_speed);
 
           return x`
             <div class="wind-detail">
               <ha-icon class="wind-icon" icon="hass:${this.getWindDirIcon(item.wind_bearing)}"></ha-icon>
-              <span class="wind-speed">${dWindSpeed}</span>
-              <span class="wind-unit">${this.ll('units')[this.unitSpeed]}</span>
+              <span class="wind-speed">${itemWind.value}</span>
+              <span class="wind-unit">${itemWind.unit}</span>
             </div>
           `;
         })}
