@@ -37,7 +37,7 @@
     "build": "npm run lint && npm test && npm run rollup",
     "lint": "eslint src test *.mjs",
     "rollup": "rollup -c",
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   },
   "bugs": {
     "url": "https://github.com/rmmedia-pl/weather-chart-card/issues"
