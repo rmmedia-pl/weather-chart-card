@@ -1,5 +1,11 @@
 import locale from './locale.js';
 import {
+  CARD_OPTION_DEFAULTS,
+  FORECAST_OPTION_DEFAULTS,
+  cardOption,
+  forecastOption
+} from './defaults.js';
+import {
   cardinalDirectionsIcon,
   weatherIcons,
   weatherIconsDay,
@@ -96,21 +102,15 @@ static getStubConfig(hass, unusedEntities, allEntities) {
 setConfig(config) {
   const cardConfig = {
     icons_size: 25,
-    animated_icons: false,
     icon_style: 'style1',
     current_temp_size: 28,
     time_size: 26,
     day_date_size: 15,
-    show_feels_like: false,
-    show_dew_point: false,
-    show_wind_gust_speed: false,
-    show_visibility: false,
-    show_last_changed: false,
-    show_description: false,
+    // On/off options come from defaults.js, which the editor reads too.
+    ...CARD_OPTION_DEFAULTS,
     ...config,
     forecast: {
       precipitation_type: 'rainfall',
-      show_probability: false,
       labels_font_size: 11,
       chart_height: 180,
       precip_bar_size: 100,
@@ -118,12 +118,10 @@ setConfig(config) {
       temperature1_color: 'rgba(255, 152, 0, 1.0)',
       temperature2_color: 'rgba(68, 115, 158, 1.0)',
       precipitation_color: 'rgba(132, 209, 253, 1.0)',
-      condition_icons: true,
-      show_wind_forecast: true,
-      round_temp: false,
       type: 'daily',
       number_of_forecasts: '0',
       '12hourformat': false,
+      ...FORECAST_OPTION_DEFAULTS,
       ...config.forecast,
     },
     units: {
@@ -131,6 +129,17 @@ setConfig(config) {
       ...config.units,
     }
   };
+
+  // Normalise the on/off options to real booleans. The render code checks
+  // them in three different styles ('!== false', '== true', plain truthy),
+  // which only agree if the value really is a boolean - hand-written YAML
+  // can carry the strings 'true' and 'false'.
+  for (const key of Object.keys(CARD_OPTION_DEFAULTS)) {
+    cardConfig[key] = cardOption(cardConfig, key);
+  }
+  for (const key of Object.keys(FORECAST_OPTION_DEFAULTS)) {
+    cardConfig.forecast[key] = forecastOption(cardConfig.forecast, key);
+  }
 
   cardConfig.units.speed = config.speed ? config.speed : cardConfig.units.speed;
 

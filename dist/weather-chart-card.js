@@ -785,6 +785,74 @@ const locale = {
   },
 };
 
+// One source of truth for the card's on/off options.
+//
+// The card and the visual editor used to disagree: the card treated a missing
+// `show_feels_like` as off, while the editor drew its toggle with
+// `!== false`, so the switch said "on" for a row that was not rendered.
+// Both now read these tables, so a toggle always shows what the card does.
+
+// Options that are on until the user turns them off.
+const CARD_OPTION_DEFAULTS = {
+  show_main: true,
+  show_temperature: true,
+  show_current_condition: true,
+  show_attributes: true,
+  show_humidity: true,
+  show_pressure: true,
+  show_sun: true,
+  show_wind_direction: true,
+  show_wind_speed: true,
+
+  // Options that are off until the user turns them on.
+  show_feels_like: false,
+  show_description: false,
+  show_dew_point: false,
+  show_wind_gust_speed: false,
+  show_visibility: false,
+  show_last_changed: false,
+  show_time: false,
+  show_time_seconds: false,
+  show_day: false,
+  show_date: false,
+  use_12hour_format: false,
+  autoscroll: false,
+  animated_icons: false,
+};
+
+const FORECAST_OPTION_DEFAULTS = {
+  condition_icons: true,
+  show_wind_forecast: true,
+  round_temp: false,
+  show_probability: false,
+  disable_animation: false,
+};
+
+function resolve$1(defaults, config, key) {
+  const value = config ? config[key] : undefined;
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  // YAML written by hand sometimes carries the strings instead of booleans.
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  return defaults[key] === true;
+}
+
+// Is this card-level option on, given the user's config?
+function cardOption(config, key) {
+  return resolve$1(CARD_OPTION_DEFAULTS, config, key);
+}
+
+// Is this forecast option on? `forecast` is the config's `forecast:` section.
+function forecastOption(forecast, key) {
+  return resolve$1(FORECAST_OPTION_DEFAULTS, forecast, key);
+}
+
 const cardinalDirectionsIcon = [
   'arrow-down', 'arrow-bottom-left', 'arrow-left',
   'arrow-top-left', 'arrow-up', 'arrow-top-right',
@@ -1389,7 +1457,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_main')}"
-              .checked="${this._config.show_main !== false}"
+              .checked="${cardOption(this._config, 'show_main')}"
             ></ha-switch>
             <label class="switch-label">
               Show Main
@@ -1399,7 +1467,7 @@ class WeatherChartCardEditor extends s {
         ${this.hasApparentTemperature ? x`
           <ha-switch
             @change="${(e) => this._valueChanged(e, 'show_feels_like')}"
-            .checked="${this._config.show_feels_like !== false}"
+            .checked="${cardOption(this._config, 'show_feels_like')}"
           ></ha-switch>
           <label class="switch-label">
             Show Feels Like Temperature
@@ -1410,7 +1478,7 @@ class WeatherChartCardEditor extends s {
         ${this.hasDescription ? x`
           <ha-switch
             @change="${(e) => this._valueChanged(e, 'show_description')}"
-            .checked="${this._config.show_description !== false}"
+            .checked="${cardOption(this._config, 'show_description')}"
           ></ha-switch>
           <label class="switch-label">
             Show Weather Description
@@ -1420,7 +1488,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_temperature')}"
-              .checked="${this._config.show_temperature !== false}"
+              .checked="${cardOption(this._config, 'show_temperature')}"
             ></ha-switch>
             <label class="switch-label">
               Show Current Temperature
@@ -1429,7 +1497,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_current_condition')}"
-              .checked="${this._config.show_current_condition !== false}"
+              .checked="${cardOption(this._config, 'show_current_condition')}"
             ></ha-switch>
             <label class="switch-label">
               Show Current Weather Condition
@@ -1438,7 +1506,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_attributes')}"
-              .checked="${this._config.show_attributes !== false}"
+              .checked="${cardOption(this._config, 'show_attributes')}"
             ></ha-switch>
             <label class="switch-label">
               Show Attributes
@@ -1447,7 +1515,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_humidity')}"
-              .checked="${this._config.show_humidity !== false}"
+              .checked="${cardOption(this._config, 'show_humidity')}"
             ></ha-switch>
             <label class="switch-label">
               Show Humidity
@@ -1456,7 +1524,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_pressure')}"
-              .checked="${this._config.show_pressure !== false}"
+              .checked="${cardOption(this._config, 'show_pressure')}"
             ></ha-switch>
             <label class="switch-label">
               Show Pressure
@@ -1465,7 +1533,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_sun')}"
-              .checked="${this._config.show_sun !== false}"
+              .checked="${cardOption(this._config, 'show_sun')}"
             ></ha-switch>
             <label class="switch-label">
               Show Sun
@@ -1474,7 +1542,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_wind_direction')}"
-              .checked="${this._config.show_wind_direction !== false}"
+              .checked="${cardOption(this._config, 'show_wind_direction')}"
             ></ha-switch>
             <label class="switch-label">
               Show Wind Direction
@@ -1483,7 +1551,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_wind_speed')}"
-              .checked="${this._config.show_wind_speed !== false}"
+              .checked="${cardOption(this._config, 'show_wind_speed')}"
             ></ha-switch>
             <label class="switch-label">
               Show Wind Speed
@@ -1493,7 +1561,7 @@ class WeatherChartCardEditor extends s {
         ${this.hasDewpoint ? x`
           <ha-switch
             @change="${(e) => this._valueChanged(e, 'show_dew_point')}"
-            .checked="${this._config.show_dew_point !== false}"
+            .checked="${cardOption(this._config, 'show_dew_point')}"
           ></ha-switch>
           <label class="switch-label">
             Show Dew Point
@@ -1504,7 +1572,7 @@ class WeatherChartCardEditor extends s {
         ${this.hasWindgustspeed ? x`
           <ha-switch
             @change="${(e) => this._valueChanged(e, 'show_wind_gust_speed')}"
-            .checked="${this._config.show_wind_gust_speed !== false}"
+            .checked="${cardOption(this._config, 'show_wind_gust_speed')}"
           ></ha-switch>
           <label class="switch-label">
             Show Wind Gust Speed
@@ -1515,7 +1583,7 @@ class WeatherChartCardEditor extends s {
         ${this.hasVisibility ? x`
           <ha-switch
             @change="${(e) => this._valueChanged(e, 'show_visibility')}"
-            .checked="${this._config.show_visibility !== false}"
+            .checked="${cardOption(this._config, 'show_visibility')}"
           ></ha-switch>
           <label class="switch-label">
             Show Visibility
@@ -1525,7 +1593,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_last_changed')}"
-              .checked="${this._config.show_last_changed !== false}"
+              .checked="${cardOption(this._config, 'show_last_changed')}"
             ></ha-switch>
             <label class="switch-label">
               Show when last data changed
@@ -1534,7 +1602,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'use_12hour_format')}"
-              .checked="${this._config.use_12hour_format !== false}"
+              .checked="${cardOption(this._config, 'use_12hour_format')}"
             ></ha-switch>
             <label class="switch-label">
               Use 12-Hour Format
@@ -1543,7 +1611,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'autoscroll')}"
-              .checked="${this._config.autoscroll !== false}"
+              .checked="${cardOption(this._config, 'autoscroll')}"
             ></ha-switch>
             <label class="switch-label">
               Autoscroll
@@ -1553,41 +1621,41 @@ class WeatherChartCardEditor extends s {
             <div class="switch-right">
               <ha-switch
                 @change="${(e) => this._valueChanged(e, 'show_time')}"
-                .checked="${this._config.show_time !== false}"
+                .checked="${cardOption(this._config, 'show_time')}"
               ></ha-switch>
               <label class="switch-label">
                 Show Current Time
               </label>
             </div>
-            <div class="switch-right checkbox-container" style="${this._config.show_time ? 'display: flex;' : 'display: none;'}">
+            <div class="switch-right checkbox-container" style="${cardOption(this._config, 'show_time') ? 'display: flex;' : 'display: none;'}">
               <ha-checkbox
                 @change="${(e) => this._valueChanged(e, 'show_time_seconds')}"
-                .checked="${this._config.show_time_seconds !== false}"
+                .checked="${cardOption(this._config, 'show_time_seconds')}"
               ></ha-checkbox>
               <label class="check-label">
                 Show Seconds
               </label>
             </div>
-            <div class="switch-right checkbox-container" style="${this._config.show_time ? 'display: flex;' : 'display: none;'}">
+            <div class="switch-right checkbox-container" style="${cardOption(this._config, 'show_time') ? 'display: flex;' : 'display: none;'}">
               <ha-checkbox
                 @change="${(e) => this._valueChanged(e, 'show_day')}"
-                .checked="${this._config.show_day !== false}"
+                .checked="${cardOption(this._config, 'show_day')}"
               ></ha-checkbox>
               <label class="check-label">
                 Show Day
               </label>
             </div>
-            <div class="switch-right checkbox-container" style="${this._config.show_time ? 'display: flex;' : 'display: none;'}">
+            <div class="switch-right checkbox-container" style="${cardOption(this._config, 'show_time') ? 'display: flex;' : 'display: none;'}">
               <ha-checkbox
                 @change="${(e) => this._valueChanged(e, 'show_date')}"
-                .checked="${this._config.show_date !== false}"
+                .checked="${cardOption(this._config, 'show_date')}"
               ></ha-checkbox>
               <label class="check-label">
                 Show Date
               </label>
             </div>
           </div>
-            <div class="flex-container" style="${this._config.show_time ? 'display: flex;' : 'display: none;'}">
+            <div class="flex-container" style="${cardOption(this._config, 'show_time') ? 'display: flex;' : 'display: none;'}">
               <ha-textfield
                 label="Time text size"
                 type="number"
@@ -1605,13 +1673,13 @@ class WeatherChartCardEditor extends s {
               <div class="switch-right">
                 <ha-switch
                   @change="${(e) => this._valueChanged(e, 'animated_icons')}"
-                  .checked="${this._config.animated_icons === true}"
+                  .checked="${cardOption(this._config, 'animated_icons')}"
                 ></ha-switch>
                 <label class="switch-label">
                   Use Animated Icons
                 </label>
               </div>
-              <div class="switch-right radio-container" style="${this._config.animated_icons ? 'display: flex;' : 'display: none;'}">
+              <div class="switch-right radio-container" style="${cardOption(this._config, 'animated_icons') ? 'display: flex;' : 'display: none;'}">
                   <ha-radio
                     name="icon_style"
                     value="style1"
@@ -1622,7 +1690,7 @@ class WeatherChartCardEditor extends s {
                     Style 1
                   </label>
                 </div>
-              <div class="switch-right radio-container" style="${this._config.animated_icons ? 'display: flex;' : 'display: none;'}">
+              <div class="switch-right radio-container" style="${cardOption(this._config, 'animated_icons') ? 'display: flex;' : 'display: none;'}">
                   <ha-radio
                     name="icon_style"
                     value="style2"
@@ -1694,7 +1762,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'forecast.condition_icons')}"
-              .checked="${forecastConfig.condition_icons !== false}"
+              .checked="${forecastOption(forecastConfig, 'condition_icons')}"
             ></ha-switch>
             <label class="switch-label">
               Show Condition Icons
@@ -1703,7 +1771,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'forecast.show_wind_forecast')}"
-              .checked="${forecastConfig.show_wind_forecast !== false}"
+              .checked="${forecastOption(forecastConfig, 'show_wind_forecast')}"
             ></ha-switch>
             <label class="switch-label">
               Show Wind Forecast
@@ -1712,7 +1780,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'forecast.round_temp')}"
-              .checked="${forecastConfig.round_temp !== false}"
+              .checked="${forecastOption(forecastConfig, 'round_temp')}"
             ></ha-switch>
             <label class="switch-label">
               Rounding Temperatures
@@ -1721,7 +1789,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'forecast.disable_animation')}"
-              .checked="${forecastConfig.disable_animation !== false}"
+              .checked="${forecastOption(forecastConfig, 'disable_animation')}"
             ></ha-switch>
             <label class="switch-label">
               Disable Chart Animation
@@ -1743,7 +1811,7 @@ class WeatherChartCardEditor extends s {
          <div class="switch-container" ?hidden=${forecastConfig.precipitation_type !== 'rainfall'}>
              <ha-switch
                @change="${(e) => this._valueChanged(e, 'forecast.show_probability')}"
-               .checked="${forecastConfig.show_probability !== false}"
+               .checked="${forecastOption(forecastConfig, 'show_probability')}"
              ></ha-switch>
              <label class="switch-label">
                Show precipitation probability
@@ -18193,21 +18261,15 @@ static getStubConfig(hass, unusedEntities, allEntities) {
 setConfig(config) {
   const cardConfig = {
     icons_size: 25,
-    animated_icons: false,
     icon_style: 'style1',
     current_temp_size: 28,
     time_size: 26,
     day_date_size: 15,
-    show_feels_like: false,
-    show_dew_point: false,
-    show_wind_gust_speed: false,
-    show_visibility: false,
-    show_last_changed: false,
-    show_description: false,
+    // On/off options come from defaults.js, which the editor reads too.
+    ...CARD_OPTION_DEFAULTS,
     ...config,
     forecast: {
       precipitation_type: 'rainfall',
-      show_probability: false,
       labels_font_size: 11,
       chart_height: 180,
       precip_bar_size: 100,
@@ -18215,12 +18277,10 @@ setConfig(config) {
       temperature1_color: 'rgba(255, 152, 0, 1.0)',
       temperature2_color: 'rgba(68, 115, 158, 1.0)',
       precipitation_color: 'rgba(132, 209, 253, 1.0)',
-      condition_icons: true,
-      show_wind_forecast: true,
-      round_temp: false,
       type: 'daily',
       number_of_forecasts: '0',
       '12hourformat': false,
+      ...FORECAST_OPTION_DEFAULTS,
       ...config.forecast,
     },
     units: {
@@ -18228,6 +18288,17 @@ setConfig(config) {
       ...config.units,
     }
   };
+
+  // Normalise the on/off options to real booleans. The render code checks
+  // them in three different styles ('!== false', '== true', plain truthy),
+  // which only agree if the value really is a boolean - hand-written YAML
+  // can carry the strings 'true' and 'false'.
+  for (const key of Object.keys(CARD_OPTION_DEFAULTS)) {
+    cardConfig[key] = cardOption(cardConfig, key);
+  }
+  for (const key of Object.keys(FORECAST_OPTION_DEFAULTS)) {
+    cardConfig.forecast[key] = forecastOption(cardConfig.forecast, key);
+  }
 
   cardConfig.units.speed = config.speed ? config.speed : cardConfig.units.speed;
 
