@@ -835,7 +835,9 @@ const weatherIconsNight = {
 
 const WeatherEntityFeature = {
   FORECAST_DAILY: 1,
-  FORECAST_HOURLY: 2};
+  FORECAST_HOURLY: 2,
+  FORECAST_TWICE_DAILY: 4,
+};
 
 // Unit conversions and wind-bearing maths.
 //
@@ -1315,10 +1317,22 @@ class WeatherChartCardEditor extends s {
           name="type"
           value="daily"
           @change="${this._handleTypeChange}"
-          .checked="${forecastConfig.type === 'daily'}"
+          .checked="${forecastConfig.type !== 'hourly' && forecastConfig.type !== 'twice_daily'}"
         ></ha-radio>
         <label class="check-label">
           Daily forecast
+        </label>
+      </div>
+
+      <div class="radio-group">
+        <ha-radio
+          name="type"
+          value="twice_daily"
+          @change="${this._handleTypeChange}"
+          .checked="${forecastConfig.type === 'twice_daily'}"
+        ></ha-radio>
+        <label class="check-label">
+          Twice daily forecast
         </label>
       </div>
 
@@ -18287,15 +18301,36 @@ sensorState(entityId, fallback) {
   return stateObj.state;
 }
 
-subscribeForecastEvents() {
-  const forecastType = this.config.forecast.type || 'daily';
-  const isHourly = forecastType === 'hourly';
+// The forecast type to subscribe to: what the config asks for, narrowed to
+// what the entity can actually deliver. Entities that publish only
+// twice_daily forecasts (NWS among them) used to get no chart at all, just
+// an error in the console.
+resolveForecastType() {
+  const features = {
+    hourly: WeatherEntityFeature.FORECAST_HOURLY,
+    daily: WeatherEntityFeature.FORECAST_DAILY,
+    twice_daily: WeatherEntityFeature.FORECAST_TWICE_DAILY,
+  };
+  const requested = this.config.forecast.type || 'daily';
+  // Only the two daily flavours stand in for each other; hourly data is a
+  // different thing and is not worth swapping in silently.
+  const chain = {
+    daily: ['daily', 'twice_daily'],
+    twice_daily: ['twice_daily', 'daily'],
+    hourly: ['hourly'],
+  }[requested] || ['daily', 'twice_daily'];
 
-  const feature = isHourly ? WeatherEntityFeature.FORECAST_HOURLY : WeatherEntityFeature.FORECAST_DAILY;
-  if (!this.supportsFeature(feature)) {
-    console.error(`Weather entity "${this.config.entity}" does not support ${isHourly ? 'hourly' : 'daily'} forecasts.`);
+  return chain.find((type) => this.supportsFeature(features[type])) || null;
+}
+
+subscribeForecastEvents() {
+  const forecastType = this.resolveForecastType();
+
+  if (!forecastType) {
+    console.error(`Weather entity "${this.config.entity}" does not support ${this.config.forecast.type || 'daily'} forecasts.`);
     return;
   }
+  this.activeForecastType = forecastType;
 
   let subscriber;
   const callback = (event) => {
@@ -18311,7 +18346,7 @@ subscribeForecastEvents() {
 
   subscriber = this._hass.connection.subscribeMessage(callback, {
     type: "weather/subscribe_forecast",
-    forecast_type: isHourly ? 'hourly' : 'daily',
+    forecast_type: forecastType,
     entity_id: this.config.entity,
   });
   this.forecastSubscriber = subscriber;
@@ -18643,6 +18678,7 @@ drawChart({ config, language } = this) {
   const precipUnit = config.forecast.precipitation_type === 'probability'
     ? '%'
     : this.unitLabel(precipitationUnit);
+  const forecastType = this.activeForecastType || config.forecast.type || 'daily';
   const data = this.computeForecastData();
   // Math.min/max would treat null gaps as 0.
   const temps = [...data.tempHigh, ...data.tempLow].filter((t) => t !== null);
@@ -18810,7 +18846,7 @@ drawChart({ config, language } = this) {
               maxRotation: 0,
               color: config.forecast.chart_datetime_color || textColor,
               padding: config.forecast.precipitation_type === 'rainfall' && config.forecast.show_probability && config.forecast.type !== 'hourly' ? 4 : 10,
-              callback: function (value) {
+              callback: function (value, index) {
                   var datetime = this.getLabelForValue(value);
                   var dateObj = new Date(datetime);
         
@@ -18832,8 +18868,14 @@ drawChart({ config, language } = this) {
                       return [date, time];
                   }
 
-                  if (config.forecast.type !== 'hourly') {
+                  if (forecastType !== 'hourly') {
                       var weekday = dateObj.toLocaleString(language, { weekday: 'short' }).toUpperCase();
+                      if (forecastType === 'twice_daily') {
+                          // Two columns per day, so each one says which half it is.
+                          const entry = data.forecast[index];
+                          const daytime = !entry || entry.is_daytime !== false;
+                          return [weekday, daytime ? '\u2600' : '\u263D'];
+                      }
                       return weekday;
                   }
 
@@ -18931,7 +18973,9 @@ _visibleForecast({ config, forecastItems } = this) {
   }
   let forecast = this.forecasts;
   if (config.autoscroll) {
-    const cutoff = (config.forecast.type === 'hourly' ? 1 : 24) * 60 * 60 * 1000;
+    const type = this.activeForecastType || config.forecast.type || 'daily';
+    const hours = type === 'hourly' ? 1 : type === 'twice_daily' ? 12 : 24;
+    const cutoff = hours * 60 * 60 * 1000;
     const now = new Date();
     forecast = forecast.filter((d) => now - new Date(d.datetime) <= cutoff);
   }

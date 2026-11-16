@@ -299,10 +299,22 @@ class WeatherChartCardEditor extends LitElement {
           name="type"
           value="daily"
           @change="${this._handleTypeChange}"
-          .checked="${forecastConfig.type === 'daily'}"
+          .checked="${forecastConfig.type !== 'hourly' && forecastConfig.type !== 'twice_daily'}"
         ></ha-radio>
         <label class="check-label">
           Daily forecast
+        </label>
+      </div>
+
+      <div class="radio-group">
+        <ha-radio
+          name="type"
+          value="twice_daily"
+          @change="${this._handleTypeChange}"
+          .checked="${forecastConfig.type === 'twice_daily'}"
+        ></ha-radio>
+        <label class="check-label">
+          Twice daily forecast
         </label>
       </div>
 
