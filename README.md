@@ -22,6 +22,22 @@ This repository is no longer maintained. Feel free to fork it if you find it use
 This card is available in HACS (Home Assistant Community Store).
 HACS is a third party community store and is not included in Home Assistant out of the box.
 
+### Chart gradients
+
+Two forecast options, both on by default in this fork:
+
+| Name                   | Type    | Default | Description                                                                                                                             |
+| :--------------------- | :------ | :------ | :-------------------------------------------------------------------------------------------------------------------------------------- |
+| `temperature_gradient` | boolean | `true`  | Colours the temperature lines by value - blue when cold, green when mild, red when hot - instead of one flat colour per line.           |
+| `precip_gradient`      | boolean | `true`  | Fades the precipitation bars towards the top so they sit behind the temperature lines, and rounds their top corners.                     |
+
+Set either to `false` to get the old flat colours back; `temperature1_color`,
+`temperature2_color` and `precipitation_color` still apply then.
+
+The temperature scale is fixed (-10, 0, 8, 18, 26, 34 °C) and converted when
+the card shows Fahrenheit. The ends are interpolated, so a chart whose whole
+range sits between two thresholds still gets a gradient.
+
 ### Nested in another custom card? Preload the module
 
 If this card lives *inside* another custom card (`tabbed-card`, `layout-card`,
@@ -99,6 +115,8 @@ have changed nothing.
 | show_last_changed     | boolean | false                    | Show or hide when last data changed on the card.                                                   |
 | use_12hour_format     | boolean | false                    | Display time in 12-hour format (AM/PM) instead of 24-hour format.                                  |
 | icons                 | string  | none                     | Path to the location of custom icons in svg format, for example `/local/weather-icons/`.           |
+| glass                 | boolean | `false`                  | Frosted-glass card: translucent background with a blur behind it. Only worth turning on when something is visible behind the card (a view background image); over a flat background it just looks lighter. |
+| current_condition_size| number  | `20`                     | Font size of the condition name in the header.                                                     |
 | animated_icons        | boolean | false                    | Enable the use of animated icons                                                                   |
 | icon_style            | string  | 'style1'                 | Options are 'style1' and'style2' for different set of animated icons.                              |
 | icons_size            | number  | 25                       | The size of the animated or custom icons in pixels.                                                |
