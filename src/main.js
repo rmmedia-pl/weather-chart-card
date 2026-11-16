@@ -969,11 +969,27 @@ updateChart({ forecasts, forecastChart } = this) {
           padding-bottom: ${config.show_last_changed === true ? '2px' : '16px'};
           padding-left: 16px;
         }
+        /* The clock is positioned absolutely in the card's top right corner,
+           so when it is shown the header has to keep that corner free. */
+        .header.with-clock {
+          padding-right: calc(${config.time_size}px * 4.2);
+          padding-inline-end: calc(${config.time_size}px * 4.2);
+          padding-inline-start: initial;
+        }
+        .header {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 10px 20px;
+          margin-bottom: 14px;
+        }
         .main {
           display: flex;
           align-items: center;
           font-size: ${config.current_temp_size}px;
-          margin-bottom: 10px;
+          flex: 0 1 auto;
+          min-width: 0;
         }
         .main ha-icon {
           --mdc-icon-size: 50px;
@@ -989,19 +1005,49 @@ updateChart({ forecasts, forecastChart } = this) {
           margin-inline-end: 14px;
         }
         .main div {
-          line-height: 0.9;
+          line-height: 1.1;
         }
         .main span {
           font-size: 18px;
           color: var(--secondary-text-color);
         }
         .attributes {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 6px;
-      	  font-weight: 300;
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+          align-items: start;
+          gap: 2px 14px;
+          flex: 1 1 240px;
+          font-weight: 300;
           direction: ltr;
+        }
+        /* One reading: icon, value, unit. A grid cell each, so the columns
+           line up instead of three stacks floating against each other. */
+        .attribute {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          line-height: 1.7;
+          white-space: nowrap;
+        }
+        /* Direction plus speed is the one reading that needs more room than a
+           single column, so it takes two instead of being squeezed. */
+        .attribute.wind {
+          grid-column: span 2;
+        }
+        .attribute ha-icon {
+          --mdc-icon-size: 19px;
+          flex: none;
+          color: var(--paper-item-icon-color);
+        }
+        .attr-value {
+          font-size: 14px;
+        }
+        .attr-unit {
+          font-size: 12px;
+          color: var(--secondary-text-color);
+          margin-left: 3px;
+          margin-inline-start: 3px;
+          margin-inline-end: initial;
         }
         .chart-container {
           position: relative;
@@ -1091,8 +1137,10 @@ updateChart({ forecasts, forecastChart } = this) {
 
       <ha-card header="${config.title}">
         <div class="card">
-          ${this.renderMain()}
-          ${this.renderAttributes()}
+          <div class="header${config.show_time ? ' with-clock' : ''}">
+            ${this.renderMain()}
+            ${this.renderAttributes()}
+          </div>
           <div class="chart-container">
             <canvas id="forecastChart"></canvas>
           </div>
@@ -1228,55 +1276,50 @@ renderAttributes({ config, humidity, pressure, windSpeed, windDirection, sun, la
   const showWindgustspeed = config.show_wind_gust_speed == true;
   const showVisibility = config.show_visibility == true;
 
+  const attrs = this.weather.attributes;
+
 return html`
     <div class="attributes">
-      ${((showHumidity && humidity !== undefined) || (showPressure && dPressure !== undefined) || (showDewpoint && dew_point !== undefined) || (showVisibility && visibility !== undefined)) ? html`
-        <div>
-          ${showHumidity && humidity !== undefined ? html`
-            <ha-icon icon="hass:water-percent"></ha-icon> ${humidity} %<br>
-          ` : ''}
-          ${showPressure && dPressure !== undefined ? html`
-            <ha-icon icon="hass:gauge"></ha-icon> ${dPressure} ${press.unit} <br>
-          ` : ''}
-          ${showDewpoint && dew_point !== undefined ? html`
-            <ha-icon icon="hass:thermometer-water"></ha-icon> ${dew_point} ${this.weather.attributes.temperature_unit} <br>
-          ` : ''}
-          ${showVisibility && visibility !== undefined ? html`
-            <ha-icon icon="hass:eye"></ha-icon> ${visibility} ${this.weather.attributes.visibility_unit}
-          ` : ''}
-        </div>
-      ` : ''}
-      ${((showSun && sun) || (typeof uv_index !== 'undefined' && uv_index !== undefined)) ? html`
-        <div>
-          ${typeof uv_index !== 'undefined' && uv_index !== undefined ? html`
-            <div>
-              <ha-icon icon="hass:white-balance-sunny"></ha-icon> UV: ${Math.round(uv_index * 10) / 10}
-            </div>
-          ` : ''}
-          ${showSun && sun ? html`
-            <div>
-              ${this.renderSun({ sun, language })}
-            </div>
-          ` : ''}
-        </div>
-      ` : ''}
-      ${((showWindDirection && windDirection !== undefined) || (showWindSpeed && dWindSpeed !== undefined)) ? html`
-        <div>
-          ${showWindDirection && windDirection !== undefined ? html`
-            ${windDirIcon ? html`<ha-icon icon="hass:${windDirIcon}"></ha-icon>` : ''} ${this.getWindDir(windDirection)} <br>
-          ` : ''}
-          ${showWindSpeed && dWindSpeed !== undefined ? html`
-            <ha-icon icon="hass:weather-windy"></ha-icon>
-            ${dWindSpeed} ${wind.unit} <br>
-          ` : ''}
-          ${showWindgustspeed && gust.value !== undefined ? html`
-            <ha-icon icon="hass:weather-windy-variant"></ha-icon>
-            ${gust.value} ${gust.unit}
-          ` : ''}
-        </div>
-      ` : ''}
+      ${showHumidity ? this.attributeItem('hass:water-percent', humidity, '%') : ''}
+      ${showPressure ? this.attributeItem('hass:gauge', dPressure, press.unit) : ''}
+      ${showDewpoint ? this.attributeItem('hass:thermometer-water', dew_point, attrs.temperature_unit) : ''}
+      ${showVisibility ? this.attributeItem('hass:eye', visibility, attrs.visibility_unit) : ''}
+      ${uv_index !== undefined && uv_index !== null
+        ? this.attributeItem('hass:white-balance-sunny', `UV ${Math.round(uv_index * 10) / 10}`)
+        : ''}
+      ${showSun ? this.renderSun({ sun, language }) : ''}
+      ${this.windItem({ showWindDirection, showWindSpeed, windDirection, windDirIcon, speed: dWindSpeed, unit: wind.unit })}
+      ${showWindgustspeed ? this.attributeItem('hass:weather-windy-variant', gust.value, gust.unit) : ''}
     </div>
 `;
+}
+
+// Direction and speed are one reading, so they share a cell: the grid would
+// otherwise be free to wrap "S-SW" and "19 km/h" onto different rows.
+windItem({ showWindDirection, showWindSpeed, windDirection, windDirIcon, speed, unit }) {
+  const direction = showWindDirection ? this.getWindDir(windDirection) : '';
+  const hasSpeed = showWindSpeed && speed !== undefined && speed !== null && speed !== '';
+  if (!direction && !hasSpeed) {
+    return html``;
+  }
+  const icon = direction && windDirIcon ? `hass:${windDirIcon}` : 'hass:weather-windy';
+  const value = [direction, hasSpeed ? speed : null].filter((p) => p !== null && p !== '').join(' ');
+  return this.attributeItem(icon, value, hasSpeed ? unit : null, direction && hasSpeed ? 'wind' : '');
+}
+
+// One reading in the attribute grid. Everything that used to be a line of
+// text separated by <br> goes through here, which is what lets the grid line
+// the columns up and keeps icon, value and unit spaced the same way.
+attributeItem(icon, value, unit, extraClass = '') {
+  if (value === undefined || value === null || value === '') {
+    return html``;
+  }
+  return html`
+    <div class="attribute ${extraClass}">
+      ${icon ? html`<ha-icon icon="${icon}"></ha-icon>` : ''}
+      <span class="attr-value">${value}${unit ? html`<span class="attr-unit">${unit}</span>` : ''}</span>
+    </div>
+  `;
 }
 
 renderSun({ sun, language } = this) {
@@ -1291,11 +1334,11 @@ const timeOptions = {
     minute: 'numeric'
 };
 
+  // Two items, so sunrise and sunset take their own grid cells instead of
+  // being one two-line block that nothing else lines up with.
   return html`
-    <ha-icon icon="mdi:weather-sunset-up"></ha-icon>
-      ${new Date(sun.attributes.next_rising).toLocaleTimeString(language, timeOptions)}<br>
-    <ha-icon icon="mdi:weather-sunset-down"></ha-icon>
-      ${new Date(sun.attributes.next_setting).toLocaleTimeString(language, timeOptions)}
+    ${this.attributeItem('mdi:weather-sunset-up', new Date(sun.attributes.next_rising).toLocaleTimeString(language, timeOptions))}
+    ${this.attributeItem('mdi:weather-sunset-down', new Date(sun.attributes.next_setting).toLocaleTimeString(language, timeOptions))}
   `;
 }
 
