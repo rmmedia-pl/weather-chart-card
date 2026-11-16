@@ -1,6 +1,6 @@
 {
   "name": "weather-chart-card",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Weather card with charts for Home Assistant Lovelace UI",
   "keywords": [
     "home-assistant",
@@ -10,6 +10,7 @@
     "lovelace",
     "custom-cards"
   ],
+  "type": "module",
   "module": "src/main.js",
   "repository": {
     "type": "git",
@@ -33,9 +34,10 @@
   },
   "scripts": {
     "start": "rollup -c --watch",
-    "build": "npm run lint && npm run rollup",
-    "lint": "eslint src *.mjs",
-    "rollup": "rollup -c"
+    "build": "npm run lint && npm test && npm run rollup",
+    "lint": "eslint src test *.mjs",
+    "rollup": "rollup -c",
+    "test": "node --test test/*.test.js"
   },
   "bugs": {
     "url": "https://github.com/rmmedia-pl/weather-chart-card/issues"

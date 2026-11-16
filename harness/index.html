@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>weather-chart-card P1 harness</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: system-ui, sans-serif; margin: 16px; background: #f2f2f2;
+         --card-background-color: #ffffff; --primary-text-color: #212121;
+         --divider-color: #bdbdbd; --paper-item-icon-color: #44739e; }
+  ha-card { display: block; background: var(--card-background-color); border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,.2); margin-bottom: 20px; }
+  ha-icon { display: inline-block; width: 20px; height: 20px; }
+  .case { max-width: 460px; }
+  h2 { font: 600 13px/1.4 system-ui; margin: 0 0 6px; }
+  #log { font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; background: #fff;
+         border: 1px solid #ccc; padding: 8px; margin-top: 16px; }
+  .wrap { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+</style>
+</head>
+<body>
+<div class="wrap" id="wrap"></div>
+<div id="log">(brak zdarzeń)</div>
+
+<script>
+  window.__errors = [];
+  window.addEventListener('error', (e) => window.__errors.push('error: ' + e.message));
+  window.addEventListener('unhandledrejection', (e) => window.__errors.push('rejection: ' + e.reason));
+</script>
+<script src="../dist/weather-chart-card.js"></script>
+<script>
+const FORECAST_DAILY = [0, 1, 2, 3, 4, 5].map((i) => {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() + i);
+  return {
+    datetime: d.toISOString(),
+    condition: ['sunny', 'rainy', 'cloudy', 'snowy', 'partlycloudy', 'pouring'][i],
+    temperature: 12 + i,
+    templow: 4 + i,
+    precipitation: [0, 2.4, 0, 12.5, 0.3, 24][i],
+    precipitation_probability: [0, 40, 10, 90, 20, 100][i],
+    wind_speed: [3, 12, 25, 40, 60, 90][i],
+    wind_bearing: [0, 45, 'WNW', 'NNE', 225, 350][i],
+  };
+});
+
+const FORECAST_TWICE_DAILY = [0, 1, 2, 3, 4, 5].map((i) => {
+  const d = new Date();
+  d.setHours(i % 2 === 0 ? 6 : 18, 0, 0, 0);
+  d.setDate(d.getDate() + Math.floor(i / 2));
+  return {
+    datetime: d.toISOString(),
+    condition: 'partlycloudy',
+    is_daytime: i % 2 === 0,
+    temperature: 10 + i,
+    templow: i % 2 === 0 ? 3 + i : null,
+    precipitation: i,
+    wind_speed: 10 + i * 4,
+    wind_bearing: 180,
+  };
+});
+
+function makeHass({ attrs, forecast, lengthUnit = 'km', language = 'pl', features = 3 }) {
+  const weather = {
+    entity_id: 'weather.test',
+    state: 'sunny',
+    last_changed: new Date().toISOString(),
+    attributes: Object.assign({
+      friendly_name: 'Testowa pogoda',
+      temperature: 11.4,
+      templow: 5.2,
+      humidity: 71,
+      pressure: 1013.4,
+      wind_speed: 14.7,
+      wind_gust_speed: 28.3,
+      wind_bearing: 'WNW',
+      dew_point: 6.1,
+      uv_index: 2.4,
+      visibility: 12,
+      apparent_temperature: 9.8,
+      temperature_unit: '°C',
+      pressure_unit: 'hPa',
+      wind_speed_unit: 'km/h',
+      visibility_unit: 'km',
+      precipitation_unit: 'mm',
+      supported_features: features,
+    }, attrs),
+  };
+  return {
+    language,
+    selectedLanguage: language,
+    states: {
+      'weather.test': weather,
+      'sun.sun': {
+        entity_id: 'sun.sun',
+        state: 'above_horizon',
+        attributes: {
+          next_rising: new Date(Date.now() + 36e5 * 10).toISOString(),
+          next_setting: new Date(Date.now() + 36e5 * 4).toISOString(),
+        },
+      },
+    },
+    config: { unit_system: { temperature: '°C', length: lengthUnit } },
+    connection: {
+      subscribeMessage(callback) {
+        setTimeout(() => callback({ forecast }), 0);
+        return Promise.resolve(() => {});
+      },
+    },
+    callWS: () => Promise.resolve({}),
+  };
+}
+
+const CASES = [
+  {
+    title: '1. metryczny + units.speed: Bft (porywy, Beaufort, kierunek WNW)',
+    config: {
+      entity: 'weather.test',
+      show_wind_gust_speed: true,
+      show_dew_point: true,
+      show_visibility: true,
+      units: { speed: 'Bft', pressure: 'hPa' },
+      forecast: { type: 'daily', show_wind_forecast: true, show_probability: true },
+    },
+    hass: makeHass({ forecast: FORECAST_DAILY }),
+  },
+  {
+    title: '2. inHg + wiatr w węzłach (etykiety poza locale, konwersja kn)',
+    config: {
+      entity: 'weather.test',
+      show_wind_gust_speed: true,
+      units: { speed: 'km/h', pressure: 'inHg' },
+      forecast: { type: 'daily' },
+    },
+    hass: makeHass({
+      attrs: { wind_speed_unit: 'kn', wind_speed: 18, wind_gust_speed: 31, wind_bearing: 292.5 },
+      forecast: FORECAST_DAILY,
+    }),
+  },
+  {
+    title: '3. encja tylko twice_daily (NWS) + nieznana jednostka wiatru',
+    config: {
+      entity: 'weather.test',
+      show_wind_gust_speed: true,
+      units: { speed: 'Bft' },
+      forecast: { type: 'daily', show_wind_forecast: true },
+    },
+    hass: makeHass({
+      features: 4,
+      attrs: { wind_speed_unit: 'furlong/fortnight' },
+      forecast: FORECAST_TWICE_DAILY,
+    }),
+  },
+];
+
+const wrap = document.getElementById('wrap');
+CASES.forEach((c, i) => {
+  const box = document.createElement('div');
+  box.className = 'case';
+  const h = document.createElement('h2');
+  h.textContent = c.title;
+  box.appendChild(h);
+  wrap.appendChild(box);
+  try {
+    const el = document.createElement('weather-chart-card');
+    el.setConfig(c.config);
+    box.appendChild(el);
+    el.hass = c.hass;
+  } catch (err) {
+    window.__errors.push(`case ${i + 1} threw: ${err && err.message}`);
+    const p = document.createElement('pre');
+    p.textContent = 'WYJATEK: ' + (err && err.stack);
+    box.appendChild(p);
+  }
+});
+
+setTimeout(() => {
+  const log = document.getElementById('log');
+  log.textContent = window.__errors.length
+    ? 'BLEDY:\n' + window.__errors.join('\n')
+    : 'OK: brak wyjatkow i odrzuconych obietnic';
+  // Expose what the cards actually rendered, for assertions from the outside.
+  window.__rendered = [...document.querySelectorAll('weather-chart-card')].map((el) => {
+    const root = el.shadowRoot;
+    const text = (sel) => [...root.querySelectorAll(sel)].map((n) => n.textContent.replace(/\s+/g, ' ').trim());
+    return {
+      attributes: text('.attributes div'),
+      windIcons: [...root.querySelectorAll('.wind-icon')].map((n) => n.getAttribute('icon')),
+      dirIcon: (root.querySelector('.attributes ha-icon[icon^="hass:arrow"]') || {}).getAttribute
+        ? root.querySelector('.attributes ha-icon[icon^="hass:arrow"]').getAttribute('icon')
+        : null,
+      windRow: text('.wind-detail'),
+      hasChart: !!root.querySelector('#forecastChart'),
+    };
+  });
+}, 900);
+</script>
+</body>
+</html>

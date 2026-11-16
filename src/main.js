@@ -1,11 +1,28 @@
 import locale from './locale.js';
 import {
+  CARD_OPTION_DEFAULTS,
+  FORECAST_OPTION_DEFAULTS,
+  cardOption,
+  forecastOption
+} from './defaults.js';
+import {
   cardinalDirectionsIcon,
   weatherIcons,
   weatherIconsDay,
   weatherIconsNight,
   WeatherEntityFeature
 } from './const.js';
+import {
+  beaufortFromSpeed,
+  cardinalIndex,
+  convertPressure,
+  convertSpeed,
+  isKnownPressureUnit,
+  isKnownSpeedUnit,
+  roundPressure,
+  toNumber,
+  windDirIconIndex
+} from './units.js';
 import {LitElement, html} from 'lit';
 import './weather-chart-card-editor.js';
 import {Chart, registerables} from 'chart.js';
@@ -85,21 +102,15 @@ static getStubConfig(hass, unusedEntities, allEntities) {
 setConfig(config) {
   const cardConfig = {
     icons_size: 25,
-    animated_icons: false,
     icon_style: 'style1',
     current_temp_size: 28,
     time_size: 26,
     day_date_size: 15,
-    show_feels_like: false,
-    show_dew_point: false,
-    show_wind_gust_speed: false,
-    show_visibility: false,
-    show_last_changed: false,
-    show_description: false,
+    // On/off options come from defaults.js, which the editor reads too.
+    ...CARD_OPTION_DEFAULTS,
     ...config,
     forecast: {
       precipitation_type: 'rainfall',
-      show_probability: false,
       labels_font_size: 11,
       chart_height: 180,
       precip_bar_size: 100,
@@ -107,12 +118,10 @@ setConfig(config) {
       temperature1_color: 'rgba(255, 152, 0, 1.0)',
       temperature2_color: 'rgba(68, 115, 158, 1.0)',
       precipitation_color: 'rgba(132, 209, 253, 1.0)',
-      condition_icons: true,
-      show_wind_forecast: true,
-      round_temp: false,
       type: 'daily',
       number_of_forecasts: '0',
       '12hourformat': false,
+      ...FORECAST_OPTION_DEFAULTS,
       ...config.forecast,
     },
     units: {
@@ -120,6 +129,17 @@ setConfig(config) {
       ...config.units,
     }
   };
+
+  // Normalise the on/off options to real booleans. The render code checks
+  // them in three different styles ('!== false', '== true', plain truthy),
+  // which only agree if the value really is a boolean - hand-written YAML
+  // can carry the strings 'true' and 'false'.
+  for (const key of Object.keys(CARD_OPTION_DEFAULTS)) {
+    cardConfig[key] = cardOption(cardConfig, key);
+  }
+  for (const key of Object.keys(FORECAST_OPTION_DEFAULTS)) {
+    cardConfig.forecast[key] = forecastOption(cardConfig.forecast, key);
+  }
 
   cardConfig.units.speed = config.speed ? config.speed : cardConfig.units.speed;
 
@@ -138,12 +158,17 @@ set hass(hass) {
   this._hass = hass;
   this.language = this.config.locale || hass.selectedLanguage || hass.language;
   this.sun = 'sun.sun' in hass.states ? hass.states['sun.sun'] : null;
-  this.unitSpeed = this.config.units.speed ? this.config.units.speed : this.weather && this.weather.attributes.wind_speed_unit;
-  this.unitPressure = this.config.units.pressure ? this.config.units.pressure : this.weather && this.weather.attributes.pressure_unit;
-  this.unitVisibility = this.config.units.visibility ? this.config.units.visibility : this.weather && this.weather.attributes.visibility_unit;
   this.weather = this.config.entity in hass.states
     ? hass.states[this.config.entity]
     : null;
+
+  // Units come from the weather entity, so they have to be read after it has
+  // been assigned. Reading them first meant the first render had no unit at
+  // all, which also skipped the rounding that depends on it.
+  const weatherAttrs = this.weather ? this.weather.attributes : {};
+  this.unitSpeed = this.config.units.speed || weatherAttrs.wind_speed_unit;
+  this.unitPressure = this.config.units.pressure || weatherAttrs.pressure_unit;
+  this.unitVisibility = this.config.units.visibility || weatherAttrs.visibility_unit;
 
   if (this.weather) {
     const attrs = this.weather.attributes;
@@ -188,15 +213,36 @@ sensorState(entityId, fallback) {
   return stateObj.state;
 }
 
-subscribeForecastEvents() {
-  const forecastType = this.config.forecast.type || 'daily';
-  const isHourly = forecastType === 'hourly';
+// The forecast type to subscribe to: what the config asks for, narrowed to
+// what the entity can actually deliver. Entities that publish only
+// twice_daily forecasts (NWS among them) used to get no chart at all, just
+// an error in the console.
+resolveForecastType() {
+  const features = {
+    hourly: WeatherEntityFeature.FORECAST_HOURLY,
+    daily: WeatherEntityFeature.FORECAST_DAILY,
+    twice_daily: WeatherEntityFeature.FORECAST_TWICE_DAILY,
+  };
+  const requested = this.config.forecast.type || 'daily';
+  // Only the two daily flavours stand in for each other; hourly data is a
+  // different thing and is not worth swapping in silently.
+  const chain = {
+    daily: ['daily', 'twice_daily'],
+    twice_daily: ['twice_daily', 'daily'],
+    hourly: ['hourly'],
+  }[requested] || ['daily', 'twice_daily'];
 
-  const feature = isHourly ? WeatherEntityFeature.FORECAST_HOURLY : WeatherEntityFeature.FORECAST_DAILY;
-  if (!this.supportsFeature(feature)) {
-    console.error(`Weather entity "${this.config.entity}" does not support ${isHourly ? 'hourly' : 'daily'} forecasts.`);
+  return chain.find((type) => this.supportsFeature(features[type])) || null;
+}
+
+subscribeForecastEvents() {
+  const forecastType = this.resolveForecastType();
+
+  if (!forecastType) {
+    console.error(`Weather entity "${this.config.entity}" does not support ${this.config.forecast.type || 'daily'} forecasts.`);
     return;
   }
+  this.activeForecastType = forecastType;
 
   let subscriber;
   const callback = (event) => {
@@ -212,7 +258,7 @@ subscribeForecastEvents() {
 
   subscriber = this._hass.connection.subscribeMessage(callback, {
     type: "weather/subscribe_forecast",
-    forecast_type: isHourly ? 'hourly' : 'daily',
+    forecast_type: forecastType,
     entity_id: this.config.entity,
   });
   this.forecastSubscriber = subscriber;
@@ -305,14 +351,29 @@ measureCard() {
   this.drawChart();
 }
 
+// Locale lookup with a fallback chain: the exact tag Home Assistant gave us
+// (pt-BR), its base language (pt), English, and finally the key itself. It
+// used to jump straight from an unknown tag to English, and a key missing
+// from a translation returned undefined, which rendered as "undefined".
 ll(str) {
-  const selectedLocale = this.config.locale || this.language || 'en';
-
-  if (locale[selectedLocale] === undefined) {
-    return locale.en[str];
+  const requested = this.config.locale || this.language || 'en';
+  const candidates = [];
+  if (typeof requested === 'string' && requested) {
+    candidates.push(requested, requested.toLowerCase());
+    if (requested.includes('-')) {
+      const base = requested.split('-')[0];
+      candidates.push(base, base.toLowerCase());
+    }
   }
+  candidates.push('en');
 
-  return locale[selectedLocale][str];
+  for (const tag of candidates) {
+    const table = locale[tag];
+    if (table && table[str] !== undefined) {
+      return table[str];
+    }
+  }
+  return str;
 }
 
   getCardSize() {
@@ -334,95 +395,85 @@ ll(str) {
     return weatherIcons[condition];
   }
 
-getWindDirIcon(deg) {
-  if (typeof deg === 'number') {
-    return cardinalDirectionsIcon[parseInt((deg + 22.5) / 45.0)];
-  } else {
-    var i = 9;
-    switch (deg) {
-      case "N":
-        i = 0;
-        break;
-      case "NNE":
-      case "NE":
-        i = 1;
-        break;
-      case "ENE":
-      case "E":
-        i = 2;
-        break;
-      case "ESE":
-      case "SE":
-        i = 3;
-        break;
-      case "SSE":
-      case "S":
-        i = 4;
-        break;
-      case "SSW":
-      case "SW":
-        i = 5;
-        break;
-      case "WSW":
-      case "W":
-        i = 6;
-        break;
-      case "NW":
-      case "NNW":
-        i = 7;
-        break;
-      case "WNW":
-        i = 8;
-        break;
-      default:
-        i = 9;
-        break;
-    }
-    return cardinalDirectionsIcon[i];
-  }
+// Arrow for a wind bearing, or null when the bearing makes no sense.
+// Textual bearings used to go through a hand-written switch that folded 16
+// directions into 8 wrongly: WNW landed on index 8, the *north* arrow, and
+// anything unrecognised produced the icon "hass:undefined". Both numbers and
+// abbreviations now take the same path through degrees.
+getWindDirIcon(bearing) {
+  const index = windDirIconIndex(bearing);
+  return index === null ? null : cardinalDirectionsIcon[index];
 }
 
-getWindDir(deg) {
-  if (typeof deg === 'number') {
-    return this.ll('cardinalDirections')[parseInt((deg + 11.25) / 22.5)];
-  } else {
-    return deg;
+getWindDir(bearing) {
+  const index = cardinalIndex(bearing);
+  const names = this.ll('cardinalDirections');
+  if (index !== null && Array.isArray(names) && names[index] !== undefined) {
+    return names[index];
   }
+  // Unknown bearing: pass through whatever the entity reported.
+  return typeof bearing === 'string' ? bearing : '';
 }
 
-calculateBeaufortScale(windSpeed) {
-  const unitConversion = {
-    'km/h': 1,
-    'm/s': 3.6,
-    'mph': 1.60934,
-  };
+// Localised unit label, falling back to the unit itself. The locale files
+// only carry eight units, so inHg and the like had no label at all.
+unitLabel(unit) {
+  if (!unit) {
+    return '';
+  }
+  const labels = this.ll('units');
+  const label = labels && labels[unit];
+  return label === undefined ? unit : label;
+}
 
-  if (!this.weather || !this.weather.attributes.wind_speed_unit) {
-    throw new Error('wind_speed_unit not available in weather attributes.');
+// A wind speed as it should be shown: the value converted to the configured
+// unit, together with the label that belongs to *that* number. Used for the
+// current speed, the gusts and every forecast column, so the three can no
+// longer disagree.
+displaySpeed(value) {
+  const sourceUnit = this.weather && this.weather.attributes.wind_speed_unit;
+  const target = this.unitSpeed;
+  const raw = toNumber(value);
+
+  if (raw === null) {
+    return { value: undefined, unit: this.unitLabel(target) };
   }
 
-  const wind_speed_unit = this.weather.attributes.wind_speed_unit;
-  const conversionFactor = unitConversion[wind_speed_unit];
-
-  if (typeof conversionFactor !== 'number') {
-    throw new Error(`Unknown wind_speed_unit: ${wind_speed_unit}`);
+  if (target === 'Bft') {
+    const force = beaufortFromSpeed(raw, sourceUnit);
+    // An unconvertible source unit used to throw and kill the render.
+    return force === null
+      ? { value: Math.round(raw), unit: this.unitLabel(sourceUnit) }
+      : { value: force, unit: this.unitLabel('Bft') };
   }
 
-  const windSpeedInKmPerHour = windSpeed * conversionFactor;
+  if (target === sourceUnit) {
+    return { value: Math.round(raw), unit: this.unitLabel(target) };
+  }
 
-  if (windSpeedInKmPerHour < 1) return 0;
-  else if (windSpeedInKmPerHour < 6) return 1;
-  else if (windSpeedInKmPerHour < 12) return 2;
-  else if (windSpeedInKmPerHour < 20) return 3;
-  else if (windSpeedInKmPerHour < 29) return 4;
-  else if (windSpeedInKmPerHour < 39) return 5;
-  else if (windSpeedInKmPerHour < 50) return 6;
-  else if (windSpeedInKmPerHour < 62) return 7;
-  else if (windSpeedInKmPerHour < 75) return 8;
-  else if (windSpeedInKmPerHour < 89) return 9;
-  else if (windSpeedInKmPerHour < 103) return 10;
-  else if (windSpeedInKmPerHour < 118) return 11;
-  else return 12;
+  if (isKnownSpeedUnit(sourceUnit) && isKnownSpeedUnit(target)) {
+    return { value: Math.round(convertSpeed(raw, sourceUnit, target)), unit: this.unitLabel(target) };
+  }
+
+  // Cannot convert: show the number we were given, labelled honestly.
+  return { value: Math.round(raw), unit: this.unitLabel(sourceUnit) };
+}
+
+displayPressure(value) {
+  const sourceUnit = this.weather && this.weather.attributes.pressure_unit;
+  const target = this.unitPressure;
+  const raw = toNumber(value);
+
+  if (raw === null) {
+    return { value: undefined, unit: this.unitLabel(target) };
+  }
+
+  if (target !== sourceUnit && isKnownPressureUnit(sourceUnit) && isKnownPressureUnit(target)) {
+    return { value: roundPressure(convertPressure(raw, sourceUnit, target), target), unit: this.unitLabel(target) };
+  }
+
+  const unit = target === sourceUnit ? target : sourceUnit;
+  return { value: roundPressure(raw, unit), unit: this.unitLabel(unit) };
 }
 
 async firstUpdated(changedProperties) {
@@ -531,17 +582,22 @@ drawChart({ config, language } = this) {
   }
   var tempUnit = this._hass.config.unit_system.temperature;
   var lengthUnit = this._hass.config.unit_system.length;
-  var precipUnit;
-  if (config.forecast.precipitation_type === 'probability') {
-    precipUnit = '%';
-  } else {
-    precipUnit = lengthUnit === 'km' ? this.ll('units')['mm'] : this.ll('units')['in'];
-  }
+  // The precipitation unit belongs to the weather entity, not to the system
+  // length unit: an entity can report mm while the system is imperial, and
+  // the bars were then labelled (and scaled) in inches.
+  const precipitationUnit = (this.weather && this.weather.attributes.precipitation_unit)
+    || (lengthUnit === 'km' ? 'mm' : 'in');
+  const precipUnit = config.forecast.precipitation_type === 'probability'
+    ? '%'
+    : this.unitLabel(precipitationUnit);
+  const forecastType = this.activeForecastType || config.forecast.type || 'daily';
   const data = this.computeForecastData();
   // Math.min/max would treat null gaps as 0.
   const temps = [...data.tempHigh, ...data.tempLow].filter((t) => t !== null);
 
-  var style = getComputedStyle(document.body);
+  // Read the theme from the card, not from <body>: a theme set on the card or
+  // the view, and anything card-mod injects, never reached document.body.
+  var style = getComputedStyle(this);
   var backgroundColor = style.getPropertyValue('--card-background-color');
   var textColor = style.getPropertyValue('--primary-text-color');
   var dividerColor = style.getPropertyValue('--divider-color');
@@ -558,10 +614,11 @@ drawChart({ config, language } = this) {
   if (config.forecast.precipitation_type === 'probability') {
     precipMax = 100;
   } else {
+    const metricPrecip = precipitationUnit !== 'in';
     if (config.forecast.type === 'hourly') {
-      precipMax = lengthUnit === 'km' ? 4 : 1;
+      precipMax = metricPrecip ? 4 : 1;
     } else {
-      precipMax = lengthUnit === 'km' ? 20 : 1;
+      precipMax = metricPrecip ? 20 : 1;
     }
   }
 
@@ -701,7 +758,7 @@ drawChart({ config, language } = this) {
               maxRotation: 0,
               color: config.forecast.chart_datetime_color || textColor,
               padding: config.forecast.precipitation_type === 'rainfall' && config.forecast.show_probability && config.forecast.type !== 'hourly' ? 4 : 10,
-              callback: function (value) {
+              callback: function (value, index) {
                   var datetime = this.getLabelForValue(value);
                   var dateObj = new Date(datetime);
         
@@ -723,8 +780,14 @@ drawChart({ config, language } = this) {
                       return [date, time];
                   }
 
-                  if (config.forecast.type !== 'hourly') {
+                  if (forecastType !== 'hourly') {
                       var weekday = dateObj.toLocaleString(language, { weekday: 'short' }).toUpperCase();
+                      if (forecastType === 'twice_daily') {
+                          // Two columns per day, so each one says which half it is.
+                          const entry = data.forecast[index];
+                          const daytime = !entry || entry.is_daytime !== false;
+                          return [weekday, daytime ? '\u2600' : '\u263D'];
+                      }
                       return weekday;
                   }
 
@@ -822,7 +885,9 @@ _visibleForecast({ config, forecastItems } = this) {
   }
   let forecast = this.forecasts;
   if (config.autoscroll) {
-    const cutoff = (config.forecast.type === 'hourly' ? 1 : 24) * 60 * 60 * 1000;
+    const type = this.activeForecastType || config.forecast.type || 'daily';
+    const hours = type === 'hourly' ? 1 : type === 'twice_daily' ? 12 : 24;
+    const cutoff = hours * 60 * 60 * 1000;
     const now = new Date();
     forecast = forecast.filter((d) => now - new Date(d.datetime) <= cutoff);
   }
@@ -1142,61 +1207,14 @@ syncClock() {
 }
 
 renderAttributes({ config, humidity, pressure, windSpeed, windDirection, sun, language, uv_index, dew_point, wind_gust_speed, visibility } = this) {
-  let dWindSpeed = windSpeed;
-  let dPressure = pressure;
-
-  if (this.unitSpeed !== this.weather.attributes.wind_speed_unit) {
-    if (this.unitSpeed === 'm/s') {
-      if (this.weather.attributes.wind_speed_unit === 'km/h') {
-        dWindSpeed = Math.round(windSpeed * 1000 / 3600);
-      } else if (this.weather.attributes.wind_speed_unit === 'mph') {
-        dWindSpeed = Math.round(windSpeed * 0.44704);
-      }
-    } else if (this.unitSpeed === 'km/h') {
-      if (this.weather.attributes.wind_speed_unit === 'm/s') {
-        dWindSpeed = Math.round(windSpeed * 3.6);
-      } else if (this.weather.attributes.wind_speed_unit === 'mph') {
-        dWindSpeed = Math.round(windSpeed * 1.60934);
-      }
-    } else if (this.unitSpeed === 'mph') {
-      if (this.weather.attributes.wind_speed_unit === 'm/s') {
-        dWindSpeed = Math.round(windSpeed / 0.44704);
-      } else if (this.weather.attributes.wind_speed_unit === 'km/h') {
-        dWindSpeed = Math.round(windSpeed / 1.60934);
-      }
-    } else if (this.unitSpeed === 'Bft') {
-      dWindSpeed = this.calculateBeaufortScale(windSpeed);
-    }
-  } else {
-    dWindSpeed = Math.round(dWindSpeed);
-  }
-
-  if (this.unitPressure !== this.weather.attributes.pressure_unit) {
-    if (this.unitPressure === 'mmHg') {
-      if (this.weather.attributes.pressure_unit === 'hPa') {
-        dPressure = Math.round(pressure * 0.75006);
-      } else if (this.weather.attributes.pressure_unit === 'inHg') {
-        dPressure = Math.round(pressure * 25.4);
-      }
-    } else if (this.unitPressure === 'hPa') {
-      if (this.weather.attributes.pressure_unit === 'mmHg') {
-        dPressure = Math.round(pressure / 0.75006);
-      } else if (this.weather.attributes.pressure_unit === 'inHg') {
-        dPressure = Math.round(pressure * 33.8639);
-      }
-    } else if (this.unitPressure === 'inHg') {
-      if (this.weather.attributes.pressure_unit === 'mmHg') {
-        dPressure = pressure / 25.4;
-      } else if (this.weather.attributes.pressure_unit === 'hPa') {
-        dPressure = pressure / 33.8639;
-      }
-      dPressure = dPressure.toFixed(2);
-    }
-  } else {
-    if (this.unitPressure === 'hPa' || this.unitPressure === 'mmHg') {
-      dPressure = Math.round(dPressure);
-    }
-  }
+  const wind = this.displaySpeed(windSpeed);
+  // The gusts used to be printed raw next to the *target* unit's label, so
+  // with units.speed: Bft they showed km/h under a "Bft" heading.
+  const gust = this.displaySpeed(wind_gust_speed);
+  const press = this.displayPressure(pressure);
+  const windDirIcon = this.getWindDirIcon(windDirection);
+  const dWindSpeed = wind.value;
+  const dPressure = press.value;
 
   if (config.show_attributes == false)
     return html``;
@@ -1218,7 +1236,7 @@ return html`
             <ha-icon icon="hass:water-percent"></ha-icon> ${humidity} %<br>
           ` : ''}
           ${showPressure && dPressure !== undefined ? html`
-            <ha-icon icon="hass:gauge"></ha-icon> ${dPressure} ${this.ll('units')[this.unitPressure]} <br>
+            <ha-icon icon="hass:gauge"></ha-icon> ${dPressure} ${press.unit} <br>
           ` : ''}
           ${showDewpoint && dew_point !== undefined ? html`
             <ha-icon icon="hass:thermometer-water"></ha-icon> ${dew_point} ${this.weather.attributes.temperature_unit} <br>
@@ -1245,15 +1263,15 @@ return html`
       ${((showWindDirection && windDirection !== undefined) || (showWindSpeed && dWindSpeed !== undefined)) ? html`
         <div>
           ${showWindDirection && windDirection !== undefined ? html`
-            <ha-icon icon="hass:${this.getWindDirIcon(windDirection)}"></ha-icon> ${this.getWindDir(windDirection)} <br>
+            ${windDirIcon ? html`<ha-icon icon="hass:${windDirIcon}"></ha-icon>` : ''} ${this.getWindDir(windDirection)} <br>
           ` : ''}
           ${showWindSpeed && dWindSpeed !== undefined ? html`
             <ha-icon icon="hass:weather-windy"></ha-icon>
-            ${dWindSpeed} ${this.ll('units')[this.unitSpeed]} <br>
+            ${dWindSpeed} ${wind.unit} <br>
           ` : ''}
-          ${showWindgustspeed && wind_gust_speed !== undefined ? html`
+          ${showWindgustspeed && gust.value !== undefined ? html`
             <ha-icon icon="hass:weather-windy-variant"></ha-icon>
-            ${wind_gust_speed} ${this.ll('units')[this.unitSpeed]}
+            ${gust.value} ${gust.unit}
           ` : ''}
         </div>
       ` : ''}
@@ -1351,39 +1369,14 @@ renderWind({ config } = this) {
     <div class="wind-details">
       ${showWindForecast ? html`
         ${forecast.map((item) => {
-          let dWindSpeed = item.wind_speed;
-
-          if (this.unitSpeed !== this.weather.attributes.wind_speed_unit) {
-            if (this.unitSpeed === 'm/s') {
-              if (this.weather.attributes.wind_speed_unit === 'km/h') {
-                dWindSpeed = Math.round(item.wind_speed * 1000 / 3600);
-              } else if (this.weather.attributes.wind_speed_unit === 'mph') {
-                dWindSpeed = Math.round(item.wind_speed * 0.44704);
-              }
-            } else if (this.unitSpeed === 'km/h') {
-              if (this.weather.attributes.wind_speed_unit === 'm/s') {
-                dWindSpeed = Math.round(item.wind_speed * 3.6);
-              } else if (this.weather.attributes.wind_speed_unit === 'mph') {
-                dWindSpeed = Math.round(item.wind_speed * 1.60934);
-              }
-            } else if (this.unitSpeed === 'mph') {
-              if (this.weather.attributes.wind_speed_unit === 'm/s') {
-                dWindSpeed = Math.round(item.wind_speed / 0.44704);
-              } else if (this.weather.attributes.wind_speed_unit === 'km/h') {
-                dWindSpeed = Math.round(item.wind_speed / 1.60934);
-              }
-            } else if (this.unitSpeed === 'Bft') {
-              dWindSpeed = this.calculateBeaufortScale(item.wind_speed);
-            }
-          } else {
-            dWindSpeed = Math.round(dWindSpeed);
-          }
+          const itemWind = this.displaySpeed(item.wind_speed);
+          const itemIcon = this.getWindDirIcon(item.wind_bearing);
 
           return html`
             <div class="wind-detail">
-              <ha-icon class="wind-icon" icon="hass:${this.getWindDirIcon(item.wind_bearing)}"></ha-icon>
-              <span class="wind-speed">${dWindSpeed}</span>
-              <span class="wind-unit">${this.ll('units')[this.unitSpeed]}</span>
+              ${itemIcon ? html`<ha-icon class="wind-icon" icon="hass:${itemIcon}"></ha-icon>` : ''}
+              <span class="wind-speed">${itemWind.value}</span>
+              <span class="wind-unit">${itemWind.unit}</span>
             </div>
           `;
         })}

@@ -785,6 +785,74 @@ const locale = {
   },
 };
 
+// One source of truth for the card's on/off options.
+//
+// The card and the visual editor used to disagree: the card treated a missing
+// `show_feels_like` as off, while the editor drew its toggle with
+// `!== false`, so the switch said "on" for a row that was not rendered.
+// Both now read these tables, so a toggle always shows what the card does.
+
+// Options that are on until the user turns them off.
+const CARD_OPTION_DEFAULTS = {
+  show_main: true,
+  show_temperature: true,
+  show_current_condition: true,
+  show_attributes: true,
+  show_humidity: true,
+  show_pressure: true,
+  show_sun: true,
+  show_wind_direction: true,
+  show_wind_speed: true,
+
+  // Options that are off until the user turns them on.
+  show_feels_like: false,
+  show_description: false,
+  show_dew_point: false,
+  show_wind_gust_speed: false,
+  show_visibility: false,
+  show_last_changed: false,
+  show_time: false,
+  show_time_seconds: false,
+  show_day: false,
+  show_date: false,
+  use_12hour_format: false,
+  autoscroll: false,
+  animated_icons: false,
+};
+
+const FORECAST_OPTION_DEFAULTS = {
+  condition_icons: true,
+  show_wind_forecast: true,
+  round_temp: false,
+  show_probability: false,
+  disable_animation: false,
+};
+
+function resolve$1(defaults, config, key) {
+  const value = config ? config[key] : undefined;
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  // YAML written by hand sometimes carries the strings instead of booleans.
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  return defaults[key] === true;
+}
+
+// Is this card-level option on, given the user's config?
+function cardOption(config, key) {
+  return resolve$1(CARD_OPTION_DEFAULTS, config, key);
+}
+
+// Is this forecast option on? `forecast` is the config's `forecast:` section.
+function forecastOption(forecast, key) {
+  return resolve$1(FORECAST_OPTION_DEFAULTS, forecast, key);
+}
+
 const cardinalDirectionsIcon = [
   'arrow-down', 'arrow-bottom-left', 'arrow-left',
   'arrow-top-left', 'arrow-up', 'arrow-top-right',
@@ -835,7 +903,162 @@ const weatherIconsNight = {
 
 const WeatherEntityFeature = {
   FORECAST_DAILY: 1,
-  FORECAST_HOURLY: 2};
+  FORECAST_HOURLY: 2,
+  FORECAST_TWICE_DAILY: 4,
+};
+
+// Unit conversions and wind-bearing maths.
+//
+// Everything here is a pure function: no DOM, no Home Assistant objects, no
+// `this`. That is deliberate — it is the part of the card that is easy to get
+// wrong and the only part covered by unit tests (`npm test`).
+//
+// Unknown units are never fatal. A conversion asked for in a unit this table
+// does not know returns the value unchanged, so an exotic `wind_speed_unit`
+// shows a slightly wrong label instead of taking the whole card down.
+
+// Multipliers to the base unit (m/s for speed, hPa for pressure).
+const SPEED_TO_MS = {
+  'm/s': 1,
+  'km/h': 1 / 3.6,
+  'mph': 0.44704,
+  'kn': 0.5144444444444445,
+  'kt': 0.5144444444444445,
+  'knot': 0.5144444444444445,
+  'knots': 0.5144444444444445,
+  'ft/s': 0.3048,
+};
+
+const PRESSURE_TO_HPA = {
+  'hPa': 1,
+  'mbar': 1,
+  'mmHg': 1.3332236842105263,
+  'inHg': 33.86388666666671,
+  'kPa': 10,
+  'psi': 68.94757293168361,
+};
+
+// 16-point compass, as text, to degrees. Home Assistant's `wind_bearing` is
+// usually numeric, but several integrations publish these abbreviations.
+const CARDINAL_TO_BEARING = {
+  N: 0,
+  NNE: 22.5,
+  NE: 45,
+  ENE: 67.5,
+  E: 90,
+  ESE: 112.5,
+  SE: 135,
+  SSE: 157.5,
+  S: 180,
+  SSW: 202.5,
+  SW: 225,
+  WSW: 247.5,
+  W: 270,
+  WNW: 292.5,
+  NW: 315,
+  NNW: 337.5,
+};
+
+// Upper bounds of Beaufort 0..11 in km/h; anything above is 12.
+const BEAUFORT_MAX_KMH = [1, 6, 12, 20, 29, 39, 50, 62, 75, 89, 103, 118];
+
+// Numbers arrive both as numbers (attributes) and as strings (sensor states).
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const n = typeof value === 'number' ? value : parseFloat(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function convert(value, from, to, table) {
+  const n = toNumber(value);
+  if (n === null) {
+    return null;
+  }
+  if (from === to) {
+    return n;
+  }
+  const fromFactor = table[from];
+  const toFactor = table[to];
+  if (typeof fromFactor !== 'number' || typeof toFactor !== 'number') {
+    return n;
+  }
+  return (n * fromFactor) / toFactor;
+}
+
+function convertSpeed(value, from, to) {
+  return convert(value, from, to, SPEED_TO_MS);
+}
+
+function convertPressure(value, from, to) {
+  return convert(value, from, to, PRESSURE_TO_HPA);
+}
+
+function isKnownSpeedUnit(unit) {
+  return typeof unit === 'string' && Object.prototype.hasOwnProperty.call(SPEED_TO_MS, unit);
+}
+
+function isKnownPressureUnit(unit) {
+  return typeof unit === 'string' && Object.prototype.hasOwnProperty.call(PRESSURE_TO_HPA, unit);
+}
+
+// Beaufort number, or null when the source unit is not convertible — the
+// caller then shows the raw speed instead of crashing on an exception.
+function beaufortFromSpeed(value, unit) {
+  const n = toNumber(value);
+  if (n === null || !isKnownSpeedUnit(unit)) {
+    return null;
+  }
+  const kmh = convertSpeed(n, unit, 'km/h');
+  const index = BEAUFORT_MAX_KMH.findIndex((max) => kmh < max);
+  return index === -1 ? 12 : index;
+}
+
+// Pressure keeps the rounding the card has always used: whole units for the
+// coarse ones, decimals where a whole number would hide every change.
+function roundPressure(value, unit) {
+  const n = toNumber(value);
+  if (n === null) {
+    return null;
+  }
+  if (unit === 'inHg' || unit === 'psi') {
+    return n.toFixed(2);
+  }
+  if (unit === 'kPa') {
+    return n.toFixed(1);
+  }
+  return Math.round(n);
+}
+
+// Degrees from either a number or a compass abbreviation; null when neither.
+function toBearing(value) {
+  if (typeof value === 'string') {
+    const key = value.trim().toUpperCase();
+    if (Object.prototype.hasOwnProperty.call(CARDINAL_TO_BEARING, key)) {
+      return CARDINAL_TO_BEARING[key];
+    }
+  }
+  return toNumber(value);
+}
+
+// Index into cardinalDirectionsIcon (8 arrows + the wrap-around back to N).
+function windDirIconIndex(bearing) {
+  const deg = toBearing(bearing);
+  if (deg === null) {
+    return null;
+  }
+  return Math.floor((((deg % 360) + 360) % 360 + 22.5) / 45);
+}
+
+// Index into the localised 17-entry cardinalDirections list.
+function cardinalIndex(bearing) {
+  const deg = toBearing(bearing);
+  if (deg === null) {
+    return null;
+  }
+  return Math.floor((((deg % 360) + 360) % 360 + 11.25) / 22.5);
+}
 
 /**
  * @license
@@ -1162,10 +1385,22 @@ class WeatherChartCardEditor extends s {
           name="type"
           value="daily"
           @change="${this._handleTypeChange}"
-          .checked="${forecastConfig.type === 'daily'}"
+          .checked="${forecastConfig.type !== 'hourly' && forecastConfig.type !== 'twice_daily'}"
         ></ha-radio>
         <label class="check-label">
           Daily forecast
+        </label>
+      </div>
+
+      <div class="radio-group">
+        <ha-radio
+          name="type"
+          value="twice_daily"
+          @change="${this._handleTypeChange}"
+          .checked="${forecastConfig.type === 'twice_daily'}"
+        ></ha-radio>
+        <label class="check-label">
+          Twice daily forecast
         </label>
       </div>
 
@@ -1222,7 +1457,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_main')}"
-              .checked="${this._config.show_main !== false}"
+              .checked="${cardOption(this._config, 'show_main')}"
             ></ha-switch>
             <label class="switch-label">
               Show Main
@@ -1232,7 +1467,7 @@ class WeatherChartCardEditor extends s {
         ${this.hasApparentTemperature ? x`
           <ha-switch
             @change="${(e) => this._valueChanged(e, 'show_feels_like')}"
-            .checked="${this._config.show_feels_like !== false}"
+            .checked="${cardOption(this._config, 'show_feels_like')}"
           ></ha-switch>
           <label class="switch-label">
             Show Feels Like Temperature
@@ -1243,7 +1478,7 @@ class WeatherChartCardEditor extends s {
         ${this.hasDescription ? x`
           <ha-switch
             @change="${(e) => this._valueChanged(e, 'show_description')}"
-            .checked="${this._config.show_description !== false}"
+            .checked="${cardOption(this._config, 'show_description')}"
           ></ha-switch>
           <label class="switch-label">
             Show Weather Description
@@ -1253,7 +1488,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_temperature')}"
-              .checked="${this._config.show_temperature !== false}"
+              .checked="${cardOption(this._config, 'show_temperature')}"
             ></ha-switch>
             <label class="switch-label">
               Show Current Temperature
@@ -1262,7 +1497,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_current_condition')}"
-              .checked="${this._config.show_current_condition !== false}"
+              .checked="${cardOption(this._config, 'show_current_condition')}"
             ></ha-switch>
             <label class="switch-label">
               Show Current Weather Condition
@@ -1271,7 +1506,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_attributes')}"
-              .checked="${this._config.show_attributes !== false}"
+              .checked="${cardOption(this._config, 'show_attributes')}"
             ></ha-switch>
             <label class="switch-label">
               Show Attributes
@@ -1280,7 +1515,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_humidity')}"
-              .checked="${this._config.show_humidity !== false}"
+              .checked="${cardOption(this._config, 'show_humidity')}"
             ></ha-switch>
             <label class="switch-label">
               Show Humidity
@@ -1289,7 +1524,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_pressure')}"
-              .checked="${this._config.show_pressure !== false}"
+              .checked="${cardOption(this._config, 'show_pressure')}"
             ></ha-switch>
             <label class="switch-label">
               Show Pressure
@@ -1298,7 +1533,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_sun')}"
-              .checked="${this._config.show_sun !== false}"
+              .checked="${cardOption(this._config, 'show_sun')}"
             ></ha-switch>
             <label class="switch-label">
               Show Sun
@@ -1307,7 +1542,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_wind_direction')}"
-              .checked="${this._config.show_wind_direction !== false}"
+              .checked="${cardOption(this._config, 'show_wind_direction')}"
             ></ha-switch>
             <label class="switch-label">
               Show Wind Direction
@@ -1316,7 +1551,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_wind_speed')}"
-              .checked="${this._config.show_wind_speed !== false}"
+              .checked="${cardOption(this._config, 'show_wind_speed')}"
             ></ha-switch>
             <label class="switch-label">
               Show Wind Speed
@@ -1326,7 +1561,7 @@ class WeatherChartCardEditor extends s {
         ${this.hasDewpoint ? x`
           <ha-switch
             @change="${(e) => this._valueChanged(e, 'show_dew_point')}"
-            .checked="${this._config.show_dew_point !== false}"
+            .checked="${cardOption(this._config, 'show_dew_point')}"
           ></ha-switch>
           <label class="switch-label">
             Show Dew Point
@@ -1337,7 +1572,7 @@ class WeatherChartCardEditor extends s {
         ${this.hasWindgustspeed ? x`
           <ha-switch
             @change="${(e) => this._valueChanged(e, 'show_wind_gust_speed')}"
-            .checked="${this._config.show_wind_gust_speed !== false}"
+            .checked="${cardOption(this._config, 'show_wind_gust_speed')}"
           ></ha-switch>
           <label class="switch-label">
             Show Wind Gust Speed
@@ -1348,7 +1583,7 @@ class WeatherChartCardEditor extends s {
         ${this.hasVisibility ? x`
           <ha-switch
             @change="${(e) => this._valueChanged(e, 'show_visibility')}"
-            .checked="${this._config.show_visibility !== false}"
+            .checked="${cardOption(this._config, 'show_visibility')}"
           ></ha-switch>
           <label class="switch-label">
             Show Visibility
@@ -1358,7 +1593,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'show_last_changed')}"
-              .checked="${this._config.show_last_changed !== false}"
+              .checked="${cardOption(this._config, 'show_last_changed')}"
             ></ha-switch>
             <label class="switch-label">
               Show when last data changed
@@ -1367,7 +1602,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'use_12hour_format')}"
-              .checked="${this._config.use_12hour_format !== false}"
+              .checked="${cardOption(this._config, 'use_12hour_format')}"
             ></ha-switch>
             <label class="switch-label">
               Use 12-Hour Format
@@ -1376,7 +1611,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'autoscroll')}"
-              .checked="${this._config.autoscroll !== false}"
+              .checked="${cardOption(this._config, 'autoscroll')}"
             ></ha-switch>
             <label class="switch-label">
               Autoscroll
@@ -1386,41 +1621,41 @@ class WeatherChartCardEditor extends s {
             <div class="switch-right">
               <ha-switch
                 @change="${(e) => this._valueChanged(e, 'show_time')}"
-                .checked="${this._config.show_time !== false}"
+                .checked="${cardOption(this._config, 'show_time')}"
               ></ha-switch>
               <label class="switch-label">
                 Show Current Time
               </label>
             </div>
-            <div class="switch-right checkbox-container" style="${this._config.show_time ? 'display: flex;' : 'display: none;'}">
+            <div class="switch-right checkbox-container" style="${cardOption(this._config, 'show_time') ? 'display: flex;' : 'display: none;'}">
               <ha-checkbox
                 @change="${(e) => this._valueChanged(e, 'show_time_seconds')}"
-                .checked="${this._config.show_time_seconds !== false}"
+                .checked="${cardOption(this._config, 'show_time_seconds')}"
               ></ha-checkbox>
               <label class="check-label">
                 Show Seconds
               </label>
             </div>
-            <div class="switch-right checkbox-container" style="${this._config.show_time ? 'display: flex;' : 'display: none;'}">
+            <div class="switch-right checkbox-container" style="${cardOption(this._config, 'show_time') ? 'display: flex;' : 'display: none;'}">
               <ha-checkbox
                 @change="${(e) => this._valueChanged(e, 'show_day')}"
-                .checked="${this._config.show_day !== false}"
+                .checked="${cardOption(this._config, 'show_day')}"
               ></ha-checkbox>
               <label class="check-label">
                 Show Day
               </label>
             </div>
-            <div class="switch-right checkbox-container" style="${this._config.show_time ? 'display: flex;' : 'display: none;'}">
+            <div class="switch-right checkbox-container" style="${cardOption(this._config, 'show_time') ? 'display: flex;' : 'display: none;'}">
               <ha-checkbox
                 @change="${(e) => this._valueChanged(e, 'show_date')}"
-                .checked="${this._config.show_date !== false}"
+                .checked="${cardOption(this._config, 'show_date')}"
               ></ha-checkbox>
               <label class="check-label">
                 Show Date
               </label>
             </div>
           </div>
-            <div class="flex-container" style="${this._config.show_time ? 'display: flex;' : 'display: none;'}">
+            <div class="flex-container" style="${cardOption(this._config, 'show_time') ? 'display: flex;' : 'display: none;'}">
               <ha-textfield
                 label="Time text size"
                 type="number"
@@ -1438,13 +1673,13 @@ class WeatherChartCardEditor extends s {
               <div class="switch-right">
                 <ha-switch
                   @change="${(e) => this._valueChanged(e, 'animated_icons')}"
-                  .checked="${this._config.animated_icons === true}"
+                  .checked="${cardOption(this._config, 'animated_icons')}"
                 ></ha-switch>
                 <label class="switch-label">
                   Use Animated Icons
                 </label>
               </div>
-              <div class="switch-right radio-container" style="${this._config.animated_icons ? 'display: flex;' : 'display: none;'}">
+              <div class="switch-right radio-container" style="${cardOption(this._config, 'animated_icons') ? 'display: flex;' : 'display: none;'}">
                   <ha-radio
                     name="icon_style"
                     value="style1"
@@ -1455,7 +1690,7 @@ class WeatherChartCardEditor extends s {
                     Style 1
                   </label>
                 </div>
-              <div class="switch-right radio-container" style="${this._config.animated_icons ? 'display: flex;' : 'display: none;'}">
+              <div class="switch-right radio-container" style="${cardOption(this._config, 'animated_icons') ? 'display: flex;' : 'display: none;'}">
                   <ha-radio
                     name="icon_style"
                     value="style2"
@@ -1527,7 +1762,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'forecast.condition_icons')}"
-              .checked="${forecastConfig.condition_icons !== false}"
+              .checked="${forecastOption(forecastConfig, 'condition_icons')}"
             ></ha-switch>
             <label class="switch-label">
               Show Condition Icons
@@ -1536,7 +1771,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'forecast.show_wind_forecast')}"
-              .checked="${forecastConfig.show_wind_forecast !== false}"
+              .checked="${forecastOption(forecastConfig, 'show_wind_forecast')}"
             ></ha-switch>
             <label class="switch-label">
               Show Wind Forecast
@@ -1545,7 +1780,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'forecast.round_temp')}"
-              .checked="${forecastConfig.round_temp !== false}"
+              .checked="${forecastOption(forecastConfig, 'round_temp')}"
             ></ha-switch>
             <label class="switch-label">
               Rounding Temperatures
@@ -1554,7 +1789,7 @@ class WeatherChartCardEditor extends s {
           <div class="switch-container">
             <ha-switch
               @change="${(e) => this._valueChanged(e, 'forecast.disable_animation')}"
-              .checked="${forecastConfig.disable_animation !== false}"
+              .checked="${forecastOption(forecastConfig, 'disable_animation')}"
             ></ha-switch>
             <label class="switch-label">
               Disable Chart Animation
@@ -1576,7 +1811,7 @@ class WeatherChartCardEditor extends s {
          <div class="switch-container" ?hidden=${forecastConfig.precipitation_type !== 'rainfall'}>
              <ha-switch
                @change="${(e) => this._valueChanged(e, 'forecast.show_probability')}"
-               .checked="${forecastConfig.show_probability !== false}"
+               .checked="${forecastOption(forecastConfig, 'show_probability')}"
              ></ha-switch>
              <label class="switch-label">
                Show precipitation probability
@@ -18026,21 +18261,15 @@ static getStubConfig(hass, unusedEntities, allEntities) {
 setConfig(config) {
   const cardConfig = {
     icons_size: 25,
-    animated_icons: false,
     icon_style: 'style1',
     current_temp_size: 28,
     time_size: 26,
     day_date_size: 15,
-    show_feels_like: false,
-    show_dew_point: false,
-    show_wind_gust_speed: false,
-    show_visibility: false,
-    show_last_changed: false,
-    show_description: false,
+    // On/off options come from defaults.js, which the editor reads too.
+    ...CARD_OPTION_DEFAULTS,
     ...config,
     forecast: {
       precipitation_type: 'rainfall',
-      show_probability: false,
       labels_font_size: 11,
       chart_height: 180,
       precip_bar_size: 100,
@@ -18048,12 +18277,10 @@ setConfig(config) {
       temperature1_color: 'rgba(255, 152, 0, 1.0)',
       temperature2_color: 'rgba(68, 115, 158, 1.0)',
       precipitation_color: 'rgba(132, 209, 253, 1.0)',
-      condition_icons: true,
-      show_wind_forecast: true,
-      round_temp: false,
       type: 'daily',
       number_of_forecasts: '0',
       '12hourformat': false,
+      ...FORECAST_OPTION_DEFAULTS,
       ...config.forecast,
     },
     units: {
@@ -18061,6 +18288,17 @@ setConfig(config) {
       ...config.units,
     }
   };
+
+  // Normalise the on/off options to real booleans. The render code checks
+  // them in three different styles ('!== false', '== true', plain truthy),
+  // which only agree if the value really is a boolean - hand-written YAML
+  // can carry the strings 'true' and 'false'.
+  for (const key of Object.keys(CARD_OPTION_DEFAULTS)) {
+    cardConfig[key] = cardOption(cardConfig, key);
+  }
+  for (const key of Object.keys(FORECAST_OPTION_DEFAULTS)) {
+    cardConfig.forecast[key] = forecastOption(cardConfig.forecast, key);
+  }
 
   cardConfig.units.speed = config.speed ? config.speed : cardConfig.units.speed;
 
@@ -18079,12 +18317,17 @@ set hass(hass) {
   this._hass = hass;
   this.language = this.config.locale || hass.selectedLanguage || hass.language;
   this.sun = 'sun.sun' in hass.states ? hass.states['sun.sun'] : null;
-  this.unitSpeed = this.config.units.speed ? this.config.units.speed : this.weather && this.weather.attributes.wind_speed_unit;
-  this.unitPressure = this.config.units.pressure ? this.config.units.pressure : this.weather && this.weather.attributes.pressure_unit;
-  this.unitVisibility = this.config.units.visibility ? this.config.units.visibility : this.weather && this.weather.attributes.visibility_unit;
   this.weather = this.config.entity in hass.states
     ? hass.states[this.config.entity]
     : null;
+
+  // Units come from the weather entity, so they have to be read after it has
+  // been assigned. Reading them first meant the first render had no unit at
+  // all, which also skipped the rounding that depends on it.
+  const weatherAttrs = this.weather ? this.weather.attributes : {};
+  this.unitSpeed = this.config.units.speed || weatherAttrs.wind_speed_unit;
+  this.unitPressure = this.config.units.pressure || weatherAttrs.pressure_unit;
+  this.unitVisibility = this.config.units.visibility || weatherAttrs.visibility_unit;
 
   if (this.weather) {
     const attrs = this.weather.attributes;
@@ -18129,15 +18372,36 @@ sensorState(entityId, fallback) {
   return stateObj.state;
 }
 
-subscribeForecastEvents() {
-  const forecastType = this.config.forecast.type || 'daily';
-  const isHourly = forecastType === 'hourly';
+// The forecast type to subscribe to: what the config asks for, narrowed to
+// what the entity can actually deliver. Entities that publish only
+// twice_daily forecasts (NWS among them) used to get no chart at all, just
+// an error in the console.
+resolveForecastType() {
+  const features = {
+    hourly: WeatherEntityFeature.FORECAST_HOURLY,
+    daily: WeatherEntityFeature.FORECAST_DAILY,
+    twice_daily: WeatherEntityFeature.FORECAST_TWICE_DAILY,
+  };
+  const requested = this.config.forecast.type || 'daily';
+  // Only the two daily flavours stand in for each other; hourly data is a
+  // different thing and is not worth swapping in silently.
+  const chain = {
+    daily: ['daily', 'twice_daily'],
+    twice_daily: ['twice_daily', 'daily'],
+    hourly: ['hourly'],
+  }[requested] || ['daily', 'twice_daily'];
 
-  const feature = isHourly ? WeatherEntityFeature.FORECAST_HOURLY : WeatherEntityFeature.FORECAST_DAILY;
-  if (!this.supportsFeature(feature)) {
-    console.error(`Weather entity "${this.config.entity}" does not support ${isHourly ? 'hourly' : 'daily'} forecasts.`);
+  return chain.find((type) => this.supportsFeature(features[type])) || null;
+}
+
+subscribeForecastEvents() {
+  const forecastType = this.resolveForecastType();
+
+  if (!forecastType) {
+    console.error(`Weather entity "${this.config.entity}" does not support ${this.config.forecast.type || 'daily'} forecasts.`);
     return;
   }
+  this.activeForecastType = forecastType;
 
   let subscriber;
   const callback = (event) => {
@@ -18153,7 +18417,7 @@ subscribeForecastEvents() {
 
   subscriber = this._hass.connection.subscribeMessage(callback, {
     type: "weather/subscribe_forecast",
-    forecast_type: isHourly ? 'hourly' : 'daily',
+    forecast_type: forecastType,
     entity_id: this.config.entity,
   });
   this.forecastSubscriber = subscriber;
@@ -18246,14 +18510,29 @@ measureCard() {
   this.drawChart();
 }
 
+// Locale lookup with a fallback chain: the exact tag Home Assistant gave us
+// (pt-BR), its base language (pt), English, and finally the key itself. It
+// used to jump straight from an unknown tag to English, and a key missing
+// from a translation returned undefined, which rendered as "undefined".
 ll(str) {
-  const selectedLocale = this.config.locale || this.language || 'en';
-
-  if (locale[selectedLocale] === undefined) {
-    return locale.en[str];
+  const requested = this.config.locale || this.language || 'en';
+  const candidates = [];
+  if (typeof requested === 'string' && requested) {
+    candidates.push(requested, requested.toLowerCase());
+    if (requested.includes('-')) {
+      const base = requested.split('-')[0];
+      candidates.push(base, base.toLowerCase());
+    }
   }
+  candidates.push('en');
 
-  return locale[selectedLocale][str];
+  for (const tag of candidates) {
+    const table = locale[tag];
+    if (table && table[str] !== undefined) {
+      return table[str];
+    }
+  }
+  return str;
 }
 
   getCardSize() {
@@ -18275,95 +18554,85 @@ ll(str) {
     return weatherIcons[condition];
   }
 
-getWindDirIcon(deg) {
-  if (typeof deg === 'number') {
-    return cardinalDirectionsIcon[parseInt((deg + 22.5) / 45.0)];
-  } else {
-    var i = 9;
-    switch (deg) {
-      case "N":
-        i = 0;
-        break;
-      case "NNE":
-      case "NE":
-        i = 1;
-        break;
-      case "ENE":
-      case "E":
-        i = 2;
-        break;
-      case "ESE":
-      case "SE":
-        i = 3;
-        break;
-      case "SSE":
-      case "S":
-        i = 4;
-        break;
-      case "SSW":
-      case "SW":
-        i = 5;
-        break;
-      case "WSW":
-      case "W":
-        i = 6;
-        break;
-      case "NW":
-      case "NNW":
-        i = 7;
-        break;
-      case "WNW":
-        i = 8;
-        break;
-      default:
-        i = 9;
-        break;
-    }
-    return cardinalDirectionsIcon[i];
-  }
+// Arrow for a wind bearing, or null when the bearing makes no sense.
+// Textual bearings used to go through a hand-written switch that folded 16
+// directions into 8 wrongly: WNW landed on index 8, the *north* arrow, and
+// anything unrecognised produced the icon "hass:undefined". Both numbers and
+// abbreviations now take the same path through degrees.
+getWindDirIcon(bearing) {
+  const index = windDirIconIndex(bearing);
+  return index === null ? null : cardinalDirectionsIcon[index];
 }
 
-getWindDir(deg) {
-  if (typeof deg === 'number') {
-    return this.ll('cardinalDirections')[parseInt((deg + 11.25) / 22.5)];
-  } else {
-    return deg;
+getWindDir(bearing) {
+  const index = cardinalIndex(bearing);
+  const names = this.ll('cardinalDirections');
+  if (index !== null && Array.isArray(names) && names[index] !== undefined) {
+    return names[index];
   }
+  // Unknown bearing: pass through whatever the entity reported.
+  return typeof bearing === 'string' ? bearing : '';
 }
 
-calculateBeaufortScale(windSpeed) {
-  const unitConversion = {
-    'km/h': 1,
-    'm/s': 3.6,
-    'mph': 1.60934,
-  };
+// Localised unit label, falling back to the unit itself. The locale files
+// only carry eight units, so inHg and the like had no label at all.
+unitLabel(unit) {
+  if (!unit) {
+    return '';
+  }
+  const labels = this.ll('units');
+  const label = labels && labels[unit];
+  return label === undefined ? unit : label;
+}
 
-  if (!this.weather || !this.weather.attributes.wind_speed_unit) {
-    throw new Error('wind_speed_unit not available in weather attributes.');
+// A wind speed as it should be shown: the value converted to the configured
+// unit, together with the label that belongs to *that* number. Used for the
+// current speed, the gusts and every forecast column, so the three can no
+// longer disagree.
+displaySpeed(value) {
+  const sourceUnit = this.weather && this.weather.attributes.wind_speed_unit;
+  const target = this.unitSpeed;
+  const raw = toNumber(value);
+
+  if (raw === null) {
+    return { value: undefined, unit: this.unitLabel(target) };
   }
 
-  const wind_speed_unit = this.weather.attributes.wind_speed_unit;
-  const conversionFactor = unitConversion[wind_speed_unit];
-
-  if (typeof conversionFactor !== 'number') {
-    throw new Error(`Unknown wind_speed_unit: ${wind_speed_unit}`);
+  if (target === 'Bft') {
+    const force = beaufortFromSpeed(raw, sourceUnit);
+    // An unconvertible source unit used to throw and kill the render.
+    return force === null
+      ? { value: Math.round(raw), unit: this.unitLabel(sourceUnit) }
+      : { value: force, unit: this.unitLabel('Bft') };
   }
 
-  const windSpeedInKmPerHour = windSpeed * conversionFactor;
+  if (target === sourceUnit) {
+    return { value: Math.round(raw), unit: this.unitLabel(target) };
+  }
 
-  if (windSpeedInKmPerHour < 1) return 0;
-  else if (windSpeedInKmPerHour < 6) return 1;
-  else if (windSpeedInKmPerHour < 12) return 2;
-  else if (windSpeedInKmPerHour < 20) return 3;
-  else if (windSpeedInKmPerHour < 29) return 4;
-  else if (windSpeedInKmPerHour < 39) return 5;
-  else if (windSpeedInKmPerHour < 50) return 6;
-  else if (windSpeedInKmPerHour < 62) return 7;
-  else if (windSpeedInKmPerHour < 75) return 8;
-  else if (windSpeedInKmPerHour < 89) return 9;
-  else if (windSpeedInKmPerHour < 103) return 10;
-  else if (windSpeedInKmPerHour < 118) return 11;
-  else return 12;
+  if (isKnownSpeedUnit(sourceUnit) && isKnownSpeedUnit(target)) {
+    return { value: Math.round(convertSpeed(raw, sourceUnit, target)), unit: this.unitLabel(target) };
+  }
+
+  // Cannot convert: show the number we were given, labelled honestly.
+  return { value: Math.round(raw), unit: this.unitLabel(sourceUnit) };
+}
+
+displayPressure(value) {
+  const sourceUnit = this.weather && this.weather.attributes.pressure_unit;
+  const target = this.unitPressure;
+  const raw = toNumber(value);
+
+  if (raw === null) {
+    return { value: undefined, unit: this.unitLabel(target) };
+  }
+
+  if (target !== sourceUnit && isKnownPressureUnit(sourceUnit) && isKnownPressureUnit(target)) {
+    return { value: roundPressure(convertPressure(raw, sourceUnit, target), target), unit: this.unitLabel(target) };
+  }
+
+  const unit = target === sourceUnit ? target : sourceUnit;
+  return { value: roundPressure(raw, unit), unit: this.unitLabel(unit) };
 }
 
 async firstUpdated(changedProperties) {
@@ -18472,17 +18741,22 @@ drawChart({ config, language } = this) {
   }
   var tempUnit = this._hass.config.unit_system.temperature;
   var lengthUnit = this._hass.config.unit_system.length;
-  var precipUnit;
-  if (config.forecast.precipitation_type === 'probability') {
-    precipUnit = '%';
-  } else {
-    precipUnit = lengthUnit === 'km' ? this.ll('units')['mm'] : this.ll('units')['in'];
-  }
+  // The precipitation unit belongs to the weather entity, not to the system
+  // length unit: an entity can report mm while the system is imperial, and
+  // the bars were then labelled (and scaled) in inches.
+  const precipitationUnit = (this.weather && this.weather.attributes.precipitation_unit)
+    || (lengthUnit === 'km' ? 'mm' : 'in');
+  const precipUnit = config.forecast.precipitation_type === 'probability'
+    ? '%'
+    : this.unitLabel(precipitationUnit);
+  const forecastType = this.activeForecastType || config.forecast.type || 'daily';
   const data = this.computeForecastData();
   // Math.min/max would treat null gaps as 0.
   const temps = [...data.tempHigh, ...data.tempLow].filter((t) => t !== null);
 
-  var style = getComputedStyle(document.body);
+  // Read the theme from the card, not from <body>: a theme set on the card or
+  // the view, and anything card-mod injects, never reached document.body.
+  var style = getComputedStyle(this);
   var backgroundColor = style.getPropertyValue('--card-background-color');
   var textColor = style.getPropertyValue('--primary-text-color');
   var dividerColor = style.getPropertyValue('--divider-color');
@@ -18499,10 +18773,11 @@ drawChart({ config, language } = this) {
   if (config.forecast.precipitation_type === 'probability') {
     precipMax = 100;
   } else {
+    const metricPrecip = precipitationUnit !== 'in';
     if (config.forecast.type === 'hourly') {
-      precipMax = lengthUnit === 'km' ? 4 : 1;
+      precipMax = metricPrecip ? 4 : 1;
     } else {
-      precipMax = lengthUnit === 'km' ? 20 : 1;
+      precipMax = metricPrecip ? 20 : 1;
     }
   }
 
@@ -18642,7 +18917,7 @@ drawChart({ config, language } = this) {
               maxRotation: 0,
               color: config.forecast.chart_datetime_color || textColor,
               padding: config.forecast.precipitation_type === 'rainfall' && config.forecast.show_probability && config.forecast.type !== 'hourly' ? 4 : 10,
-              callback: function (value) {
+              callback: function (value, index) {
                   var datetime = this.getLabelForValue(value);
                   var dateObj = new Date(datetime);
         
@@ -18664,8 +18939,14 @@ drawChart({ config, language } = this) {
                       return [date, time];
                   }
 
-                  if (config.forecast.type !== 'hourly') {
+                  if (forecastType !== 'hourly') {
                       var weekday = dateObj.toLocaleString(language, { weekday: 'short' }).toUpperCase();
+                      if (forecastType === 'twice_daily') {
+                          // Two columns per day, so each one says which half it is.
+                          const entry = data.forecast[index];
+                          const daytime = !entry || entry.is_daytime !== false;
+                          return [weekday, daytime ? '\u2600' : '\u263D'];
+                      }
                       return weekday;
                   }
 
@@ -18763,7 +19044,9 @@ _visibleForecast({ config, forecastItems } = this) {
   }
   let forecast = this.forecasts;
   if (config.autoscroll) {
-    const cutoff = (config.forecast.type === 'hourly' ? 1 : 24) * 60 * 60 * 1000;
+    const type = this.activeForecastType || config.forecast.type || 'daily';
+    const hours = type === 'hourly' ? 1 : type === 'twice_daily' ? 12 : 24;
+    const cutoff = hours * 60 * 60 * 1000;
     const now = new Date();
     forecast = forecast.filter((d) => now - new Date(d.datetime) <= cutoff);
   }
@@ -19083,61 +19366,14 @@ syncClock() {
 }
 
 renderAttributes({ config, humidity, pressure, windSpeed, windDirection, sun, language, uv_index, dew_point, wind_gust_speed, visibility } = this) {
-  let dWindSpeed = windSpeed;
-  let dPressure = pressure;
-
-  if (this.unitSpeed !== this.weather.attributes.wind_speed_unit) {
-    if (this.unitSpeed === 'm/s') {
-      if (this.weather.attributes.wind_speed_unit === 'km/h') {
-        dWindSpeed = Math.round(windSpeed * 1000 / 3600);
-      } else if (this.weather.attributes.wind_speed_unit === 'mph') {
-        dWindSpeed = Math.round(windSpeed * 0.44704);
-      }
-    } else if (this.unitSpeed === 'km/h') {
-      if (this.weather.attributes.wind_speed_unit === 'm/s') {
-        dWindSpeed = Math.round(windSpeed * 3.6);
-      } else if (this.weather.attributes.wind_speed_unit === 'mph') {
-        dWindSpeed = Math.round(windSpeed * 1.60934);
-      }
-    } else if (this.unitSpeed === 'mph') {
-      if (this.weather.attributes.wind_speed_unit === 'm/s') {
-        dWindSpeed = Math.round(windSpeed / 0.44704);
-      } else if (this.weather.attributes.wind_speed_unit === 'km/h') {
-        dWindSpeed = Math.round(windSpeed / 1.60934);
-      }
-    } else if (this.unitSpeed === 'Bft') {
-      dWindSpeed = this.calculateBeaufortScale(windSpeed);
-    }
-  } else {
-    dWindSpeed = Math.round(dWindSpeed);
-  }
-
-  if (this.unitPressure !== this.weather.attributes.pressure_unit) {
-    if (this.unitPressure === 'mmHg') {
-      if (this.weather.attributes.pressure_unit === 'hPa') {
-        dPressure = Math.round(pressure * 0.75006);
-      } else if (this.weather.attributes.pressure_unit === 'inHg') {
-        dPressure = Math.round(pressure * 25.4);
-      }
-    } else if (this.unitPressure === 'hPa') {
-      if (this.weather.attributes.pressure_unit === 'mmHg') {
-        dPressure = Math.round(pressure / 0.75006);
-      } else if (this.weather.attributes.pressure_unit === 'inHg') {
-        dPressure = Math.round(pressure * 33.8639);
-      }
-    } else if (this.unitPressure === 'inHg') {
-      if (this.weather.attributes.pressure_unit === 'mmHg') {
-        dPressure = pressure / 25.4;
-      } else if (this.weather.attributes.pressure_unit === 'hPa') {
-        dPressure = pressure / 33.8639;
-      }
-      dPressure = dPressure.toFixed(2);
-    }
-  } else {
-    if (this.unitPressure === 'hPa' || this.unitPressure === 'mmHg') {
-      dPressure = Math.round(dPressure);
-    }
-  }
+  const wind = this.displaySpeed(windSpeed);
+  // The gusts used to be printed raw next to the *target* unit's label, so
+  // with units.speed: Bft they showed km/h under a "Bft" heading.
+  const gust = this.displaySpeed(wind_gust_speed);
+  const press = this.displayPressure(pressure);
+  const windDirIcon = this.getWindDirIcon(windDirection);
+  const dWindSpeed = wind.value;
+  const dPressure = press.value;
 
   if (config.show_attributes == false)
     return x``;
@@ -19159,7 +19395,7 @@ return x`
             <ha-icon icon="hass:water-percent"></ha-icon> ${humidity} %<br>
           ` : ''}
           ${showPressure && dPressure !== undefined ? x`
-            <ha-icon icon="hass:gauge"></ha-icon> ${dPressure} ${this.ll('units')[this.unitPressure]} <br>
+            <ha-icon icon="hass:gauge"></ha-icon> ${dPressure} ${press.unit} <br>
           ` : ''}
           ${showDewpoint && dew_point !== undefined ? x`
             <ha-icon icon="hass:thermometer-water"></ha-icon> ${dew_point} ${this.weather.attributes.temperature_unit} <br>
@@ -19186,15 +19422,15 @@ return x`
       ${((showWindDirection && windDirection !== undefined) || (showWindSpeed && dWindSpeed !== undefined)) ? x`
         <div>
           ${showWindDirection && windDirection !== undefined ? x`
-            <ha-icon icon="hass:${this.getWindDirIcon(windDirection)}"></ha-icon> ${this.getWindDir(windDirection)} <br>
+            ${windDirIcon ? x`<ha-icon icon="hass:${windDirIcon}"></ha-icon>` : ''} ${this.getWindDir(windDirection)} <br>
           ` : ''}
           ${showWindSpeed && dWindSpeed !== undefined ? x`
             <ha-icon icon="hass:weather-windy"></ha-icon>
-            ${dWindSpeed} ${this.ll('units')[this.unitSpeed]} <br>
+            ${dWindSpeed} ${wind.unit} <br>
           ` : ''}
-          ${showWindgustspeed && wind_gust_speed !== undefined ? x`
+          ${showWindgustspeed && gust.value !== undefined ? x`
             <ha-icon icon="hass:weather-windy-variant"></ha-icon>
-            ${wind_gust_speed} ${this.ll('units')[this.unitSpeed]}
+            ${gust.value} ${gust.unit}
           ` : ''}
         </div>
       ` : ''}
@@ -19292,39 +19528,14 @@ renderWind({ config } = this) {
     <div class="wind-details">
       ${showWindForecast ? x`
         ${forecast.map((item) => {
-          let dWindSpeed = item.wind_speed;
-
-          if (this.unitSpeed !== this.weather.attributes.wind_speed_unit) {
-            if (this.unitSpeed === 'm/s') {
-              if (this.weather.attributes.wind_speed_unit === 'km/h') {
-                dWindSpeed = Math.round(item.wind_speed * 1000 / 3600);
-              } else if (this.weather.attributes.wind_speed_unit === 'mph') {
-                dWindSpeed = Math.round(item.wind_speed * 0.44704);
-              }
-            } else if (this.unitSpeed === 'km/h') {
-              if (this.weather.attributes.wind_speed_unit === 'm/s') {
-                dWindSpeed = Math.round(item.wind_speed * 3.6);
-              } else if (this.weather.attributes.wind_speed_unit === 'mph') {
-                dWindSpeed = Math.round(item.wind_speed * 1.60934);
-              }
-            } else if (this.unitSpeed === 'mph') {
-              if (this.weather.attributes.wind_speed_unit === 'm/s') {
-                dWindSpeed = Math.round(item.wind_speed / 0.44704);
-              } else if (this.weather.attributes.wind_speed_unit === 'km/h') {
-                dWindSpeed = Math.round(item.wind_speed / 1.60934);
-              }
-            } else if (this.unitSpeed === 'Bft') {
-              dWindSpeed = this.calculateBeaufortScale(item.wind_speed);
-            }
-          } else {
-            dWindSpeed = Math.round(dWindSpeed);
-          }
+          const itemWind = this.displaySpeed(item.wind_speed);
+          const itemIcon = this.getWindDirIcon(item.wind_bearing);
 
           return x`
             <div class="wind-detail">
-              <ha-icon class="wind-icon" icon="hass:${this.getWindDirIcon(item.wind_bearing)}"></ha-icon>
-              <span class="wind-speed">${dWindSpeed}</span>
-              <span class="wind-unit">${this.ll('units')[this.unitSpeed]}</span>
+              ${itemIcon ? x`<ha-icon class="wind-icon" icon="hass:${itemIcon}"></ha-icon>` : ''}
+              <span class="wind-speed">${itemWind.value}</span>
+              <span class="wind-unit">${itemWind.unit}</span>
             </div>
           `;
         })}
