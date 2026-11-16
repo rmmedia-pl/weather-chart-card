@@ -92,7 +92,7 @@ HACS is a third party community store and is not included in Home Assistant out 
 | show_wind_forecast   | boolean | true                     | Show or hide wind forecast on the card.                                                            |
 | round_temp           | boolean | false                    | Option for rounding the forecast temperatures                                                      |
 | style                | string  | style1                   | Change chart style, options: 'style1' or 'style2'                                                  |
-| type                 | string  | daily                    | Show daily or hourly forecast if available, options: 'daily' or 'hourly'                           |
+| type                 | string  | daily                    | Forecast to show, options: 'daily', 'twice_daily' or 'hourly'. 'daily' and 'twice_daily' fall back to each other when the entity supports only one of them |
 | number_of_forecasts  | number  | 0                        | Overrides the number of forecasts to display. Set to "0" for automatic mode.                       |
 | disable_animation    | boolean | false                    | Disable the chart animation.                                                                       |
 
@@ -149,6 +149,12 @@ units:
   pressure: mmHg
   speed: m/s
 ```
+
+`speed` accepts `m/s`, `km/h`, `mph`, `kn`, `ft/s` and `Bft`; `pressure` accepts
+`hPa`, `mbar`, `mmHg`, `inHg`, `kPa` and `psi`. The value is converted from
+whatever the weather entity reports. A unit outside those lists is shown
+unconverted, with the entity's own unit as the label, rather than silently
+relabelled.
 
 ###### Supported languages:
 | Language         | Locale  |
