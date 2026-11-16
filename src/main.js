@@ -321,14 +321,29 @@ measureCard() {
   this.drawChart();
 }
 
+// Locale lookup with a fallback chain: the exact tag Home Assistant gave us
+// (pt-BR), its base language (pt), English, and finally the key itself. It
+// used to jump straight from an unknown tag to English, and a key missing
+// from a translation returned undefined, which rendered as "undefined".
 ll(str) {
-  const selectedLocale = this.config.locale || this.language || 'en';
-
-  if (locale[selectedLocale] === undefined) {
-    return locale.en[str];
+  const requested = this.config.locale || this.language || 'en';
+  const candidates = [];
+  if (typeof requested === 'string' && requested) {
+    candidates.push(requested, requested.toLowerCase());
+    if (requested.includes('-')) {
+      const base = requested.split('-')[0];
+      candidates.push(base, base.toLowerCase());
+    }
   }
+  candidates.push('en');
 
-  return locale[selectedLocale][str];
+  for (const tag of candidates) {
+    const table = locale[tag];
+    if (table && table[str] !== undefined) {
+      return table[str];
+    }
+  }
+  return str;
 }
 
   getCardSize() {
