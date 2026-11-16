@@ -813,4 +813,7 @@ class WeatherChartCardEditor extends LitElement {
     `;
   }
 }
-customElements.define("weather-chart-card-editor", WeatherChartCardEditor);
+// Same reason as the card itself: this module may be evaluated twice.
+if (!customElements.get("weather-chart-card-editor")) {
+  customElements.define("weather-chart-card-editor", WeatherChartCardEditor);
+}

@@ -22,6 +22,42 @@ This repository is no longer maintained. Feel free to fork it if you find it use
 This card is available in HACS (Home Assistant Community Store).
 HACS is a third party community store and is not included in Home Assistant out of the box.
 
+### Nested in another custom card? Preload the module
+
+If this card lives *inside* another custom card (`tabbed-card`, `layout-card`,
+`swipe-card`, an `expander`), it can come up as an **empty area with no card
+frame at all** — most often in the Home Assistant companion app, and not every
+time.
+
+That is a load-order race, not a configuration error. Home Assistant builds the
+dashboard's cards before every Lovelace resource has finished evaluating. For a
+card whose element is not registered yet it inserts a placeholder that is hidden
+for the first two seconds, and when the definition does arrive it fires
+`ll-rebuild` on that placeholder. A card at the top level of a view is rebuilt
+correctly; a wrapper card has to handle that event itself, and not all of them
+do, so the slot stays empty until the page is reloaded.
+
+The fix is to have the element registered before the dashboard is built, by
+loading the module during frontend boot instead of with the dashboard:
+
+```yaml
+# configuration.yaml
+frontend:
+  extra_module_url:
+    - /local/community/weather-chart-card/weather-chart-card.js?v=1.3.1
+```
+
+Use **exactly** the URL that the resource list already has, query string
+included: an identical URL is deduplicated by the browser's module map, so the
+file is still fetched and evaluated once. Keep the Lovelace resource as it is.
+
+Both copies are safe if the URLs do differ — the module registers the element
+only when the name is free — but then the copy that loads first wins, so after
+an update you may keep running the old one. The card prints its version to the
+console on registration (`WEATHER-CHART-CARD v1.3.1`) and warns when a second
+copy finds the name taken; that is the thing to look at if an update appears to
+have changed nothing.
+
 #### Configuration variables:
 
 ##### Card options
