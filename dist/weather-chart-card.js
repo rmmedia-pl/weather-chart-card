@@ -868,6 +868,27 @@ const PRESSURE_TO_HPA = {
   'psi': 68.94757293168361,
 };
 
+// 16-point compass, as text, to degrees. Home Assistant's `wind_bearing` is
+// usually numeric, but several integrations publish these abbreviations.
+const CARDINAL_TO_BEARING = {
+  N: 0,
+  NNE: 22.5,
+  NE: 45,
+  ENE: 67.5,
+  E: 90,
+  ESE: 112.5,
+  SE: 135,
+  SSE: 157.5,
+  S: 180,
+  SSW: 202.5,
+  SW: 225,
+  WSW: 247.5,
+  W: 270,
+  WNW: 292.5,
+  NW: 315,
+  NNW: 337.5,
+};
+
 // Upper bounds of Beaufort 0..11 in km/h; anything above is 12.
 const BEAUFORT_MAX_KMH = [1, 6, 12, 20, 29, 39, 50, 62, 75, 89, 103, 118];
 
@@ -938,6 +959,35 @@ function roundPressure(value, unit) {
     return n.toFixed(1);
   }
   return Math.round(n);
+}
+
+// Degrees from either a number or a compass abbreviation; null when neither.
+function toBearing(value) {
+  if (typeof value === 'string') {
+    const key = value.trim().toUpperCase();
+    if (Object.prototype.hasOwnProperty.call(CARDINAL_TO_BEARING, key)) {
+      return CARDINAL_TO_BEARING[key];
+    }
+  }
+  return toNumber(value);
+}
+
+// Index into cardinalDirectionsIcon (8 arrows + the wrap-around back to N).
+function windDirIconIndex(bearing) {
+  const deg = toBearing(bearing);
+  if (deg === null) {
+    return null;
+  }
+  return Math.floor((((deg % 360) + 360) % 360 + 22.5) / 45);
+}
+
+// Index into the localised 17-entry cardinalDirections list.
+function cardinalIndex(bearing) {
+  const deg = toBearing(bearing);
+  if (deg === null) {
+    return null;
+  }
+  return Math.floor((((deg % 360) + 360) % 360 + 11.25) / 22.5);
 }
 
 /**
@@ -18383,60 +18433,24 @@ ll(str) {
     return weatherIcons[condition];
   }
 
-getWindDirIcon(deg) {
-  if (typeof deg === 'number') {
-    return cardinalDirectionsIcon[parseInt((deg + 22.5) / 45.0)];
-  } else {
-    var i = 9;
-    switch (deg) {
-      case "N":
-        i = 0;
-        break;
-      case "NNE":
-      case "NE":
-        i = 1;
-        break;
-      case "ENE":
-      case "E":
-        i = 2;
-        break;
-      case "ESE":
-      case "SE":
-        i = 3;
-        break;
-      case "SSE":
-      case "S":
-        i = 4;
-        break;
-      case "SSW":
-      case "SW":
-        i = 5;
-        break;
-      case "WSW":
-      case "W":
-        i = 6;
-        break;
-      case "NW":
-      case "NNW":
-        i = 7;
-        break;
-      case "WNW":
-        i = 8;
-        break;
-      default:
-        i = 9;
-        break;
-    }
-    return cardinalDirectionsIcon[i];
-  }
+// Arrow for a wind bearing, or null when the bearing makes no sense.
+// Textual bearings used to go through a hand-written switch that folded 16
+// directions into 8 wrongly: WNW landed on index 8, the *north* arrow, and
+// anything unrecognised produced the icon "hass:undefined". Both numbers and
+// abbreviations now take the same path through degrees.
+getWindDirIcon(bearing) {
+  const index = windDirIconIndex(bearing);
+  return index === null ? null : cardinalDirectionsIcon[index];
 }
 
-getWindDir(deg) {
-  if (typeof deg === 'number') {
-    return this.ll('cardinalDirections')[parseInt((deg + 11.25) / 22.5)];
-  } else {
-    return deg;
+getWindDir(bearing) {
+  const index = cardinalIndex(bearing);
+  const names = this.ll('cardinalDirections');
+  if (index !== null && Array.isArray(names) && names[index] !== undefined) {
+    return names[index];
   }
+  // Unknown bearing: pass through whatever the entity reported.
+  return typeof bearing === 'string' ? bearing : '';
 }
 
 // Localised unit label, falling back to the unit itself. The locale files
@@ -19222,6 +19236,7 @@ renderAttributes({ config, humidity, pressure, windSpeed, windDirection, sun, la
   // with units.speed: Bft they showed km/h under a "Bft" heading.
   const gust = this.displaySpeed(wind_gust_speed);
   const press = this.displayPressure(pressure);
+  const windDirIcon = this.getWindDirIcon(windDirection);
   const dWindSpeed = wind.value;
   const dPressure = press.value;
 
@@ -19272,7 +19287,7 @@ return x`
       ${((showWindDirection && windDirection !== undefined) || (showWindSpeed && dWindSpeed !== undefined)) ? x`
         <div>
           ${showWindDirection && windDirection !== undefined ? x`
-            <ha-icon icon="hass:${this.getWindDirIcon(windDirection)}"></ha-icon> ${this.getWindDir(windDirection)} <br>
+            ${windDirIcon ? x`<ha-icon icon="hass:${windDirIcon}"></ha-icon>` : ''} ${this.getWindDir(windDirection)} <br>
           ` : ''}
           ${showWindSpeed && dWindSpeed !== undefined ? x`
             <ha-icon icon="hass:weather-windy"></ha-icon>
@@ -19379,10 +19394,11 @@ renderWind({ config } = this) {
       ${showWindForecast ? x`
         ${forecast.map((item) => {
           const itemWind = this.displaySpeed(item.wind_speed);
+          const itemIcon = this.getWindDirIcon(item.wind_bearing);
 
           return x`
             <div class="wind-detail">
-              <ha-icon class="wind-icon" icon="hass:${this.getWindDirIcon(item.wind_bearing)}"></ha-icon>
+              ${itemIcon ? x`<ha-icon class="wind-icon" icon="hass:${itemIcon}"></ha-icon>` : ''}
               <span class="wind-speed">${itemWind.value}</span>
               <span class="wind-unit">${itemWind.unit}</span>
             </div>

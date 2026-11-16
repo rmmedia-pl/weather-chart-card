@@ -8,12 +8,14 @@ import {
 } from './const.js';
 import {
   beaufortFromSpeed,
+  cardinalIndex,
   convertPressure,
   convertSpeed,
   isKnownPressureUnit,
   isKnownSpeedUnit,
   roundPressure,
-  toNumber
+  toNumber,
+  windDirIconIndex
 } from './units.js';
 import {LitElement, html} from 'lit';
 import './weather-chart-card-editor.js';
@@ -348,60 +350,24 @@ ll(str) {
     return weatherIcons[condition];
   }
 
-getWindDirIcon(deg) {
-  if (typeof deg === 'number') {
-    return cardinalDirectionsIcon[parseInt((deg + 22.5) / 45.0)];
-  } else {
-    var i = 9;
-    switch (deg) {
-      case "N":
-        i = 0;
-        break;
-      case "NNE":
-      case "NE":
-        i = 1;
-        break;
-      case "ENE":
-      case "E":
-        i = 2;
-        break;
-      case "ESE":
-      case "SE":
-        i = 3;
-        break;
-      case "SSE":
-      case "S":
-        i = 4;
-        break;
-      case "SSW":
-      case "SW":
-        i = 5;
-        break;
-      case "WSW":
-      case "W":
-        i = 6;
-        break;
-      case "NW":
-      case "NNW":
-        i = 7;
-        break;
-      case "WNW":
-        i = 8;
-        break;
-      default:
-        i = 9;
-        break;
-    }
-    return cardinalDirectionsIcon[i];
-  }
+// Arrow for a wind bearing, or null when the bearing makes no sense.
+// Textual bearings used to go through a hand-written switch that folded 16
+// directions into 8 wrongly: WNW landed on index 8, the *north* arrow, and
+// anything unrecognised produced the icon "hass:undefined". Both numbers and
+// abbreviations now take the same path through degrees.
+getWindDirIcon(bearing) {
+  const index = windDirIconIndex(bearing);
+  return index === null ? null : cardinalDirectionsIcon[index];
 }
 
-getWindDir(deg) {
-  if (typeof deg === 'number') {
-    return this.ll('cardinalDirections')[parseInt((deg + 11.25) / 22.5)];
-  } else {
-    return deg;
+getWindDir(bearing) {
+  const index = cardinalIndex(bearing);
+  const names = this.ll('cardinalDirections');
+  if (index !== null && Array.isArray(names) && names[index] !== undefined) {
+    return names[index];
   }
+  // Unknown bearing: pass through whatever the entity reported.
+  return typeof bearing === 'string' ? bearing : '';
 }
 
 // Localised unit label, falling back to the unit itself. The locale files
@@ -1187,6 +1153,7 @@ renderAttributes({ config, humidity, pressure, windSpeed, windDirection, sun, la
   // with units.speed: Bft they showed km/h under a "Bft" heading.
   const gust = this.displaySpeed(wind_gust_speed);
   const press = this.displayPressure(pressure);
+  const windDirIcon = this.getWindDirIcon(windDirection);
   const dWindSpeed = wind.value;
   const dPressure = press.value;
 
@@ -1237,7 +1204,7 @@ return html`
       ${((showWindDirection && windDirection !== undefined) || (showWindSpeed && dWindSpeed !== undefined)) ? html`
         <div>
           ${showWindDirection && windDirection !== undefined ? html`
-            <ha-icon icon="hass:${this.getWindDirIcon(windDirection)}"></ha-icon> ${this.getWindDir(windDirection)} <br>
+            ${windDirIcon ? html`<ha-icon icon="hass:${windDirIcon}"></ha-icon>` : ''} ${this.getWindDir(windDirection)} <br>
           ` : ''}
           ${showWindSpeed && dWindSpeed !== undefined ? html`
             <ha-icon icon="hass:weather-windy"></ha-icon>
@@ -1344,10 +1311,11 @@ renderWind({ config } = this) {
       ${showWindForecast ? html`
         ${forecast.map((item) => {
           const itemWind = this.displaySpeed(item.wind_speed);
+          const itemIcon = this.getWindDirIcon(item.wind_bearing);
 
           return html`
             <div class="wind-detail">
-              <ha-icon class="wind-icon" icon="hass:${this.getWindDirIcon(item.wind_bearing)}"></ha-icon>
+              ${itemIcon ? html`<ha-icon class="wind-icon" icon="hass:${itemIcon}"></ha-icon>` : ''}
               <span class="wind-speed">${itemWind.value}</span>
               <span class="wind-unit">${itemWind.unit}</span>
             </div>
